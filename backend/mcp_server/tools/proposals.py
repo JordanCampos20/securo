@@ -15,6 +15,7 @@ unchanged for Securo's own UI.
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -89,6 +90,8 @@ _APPLY_FIELD = {
         "returning a preview. Ignored by Securo's internal runtime."
     ),
 }
+
+logger = logging.getLogger(__name__)
 
 
 def _can_apply(ctx: CallContext, apply: bool) -> bool:
@@ -563,22 +566,30 @@ async def propose_create_transaction(
 
     # Read-only, computed before any write path is considered. Every
     # proposal gets it: three reads inside a turn already waiting on the LLM.
-    impact = await simulate_transaction(
-        session,
-        ws_id,
-        ctx.user_id,
-        amount=Decimal(str(amount)),
-        currency=proposed["currency"],
-        type=type,
-        tx_date=target_date,
-        account=acc,
-        category=cat,
-    )
+    # Never let a simulation failure sink an otherwise-valid proposal — the
+    # user already has a correct description/amount/account/category; the
+    # impact is a nice-to-have on top of that, not a precondition.
+    impact_dict: dict[str, Any] | None = None
+    try:
+        impact = await simulate_transaction(
+            session,
+            ws_id,
+            ctx.user_id,
+            amount=Decimal(str(amount)),
+            currency=proposed["currency"],
+            type=type,
+            tx_date=target_date,
+            account=acc,
+            category=cat,
+        )
+        impact_dict = impact.model_dump(mode="json")
+    except Exception:  # noqa: BLE001
+        logger.exception("simulate_transaction failed; returning proposal without impact")
 
     preview = {
         "kind": "create_transaction",
         "proposed": proposed,
-        "impact": impact.model_dump(mode="json"),
+        "impact": impact_dict,
         "apply_endpoint": "POST /api/transactions",
     }
 

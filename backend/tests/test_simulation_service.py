@@ -417,3 +417,72 @@ async def test_simulating_never_writes(
     )
 
     assert await _count() == before
+
+
+@pytest.mark.asyncio
+async def test_cross_currency_purchase_never_touches_network(
+    session: AsyncSession, test_user, test_workspace, monkeypatch
+):
+    """A hypothetical purchase in a currency other than primary must resolve
+    via stored rates only.
+
+    Regression guard for the read-only constraint: no `fx_rates` row is
+    seeded, forcing a cache miss on USD->BRL, so if the conversion fell
+    through to `sync_rates()` (DB upsert + commit + outbound HTTP call to the
+    FX provider) it would show up here as a call. `simulate_transaction` must
+    still return a usable impact via the 1:1 fallback instead. The account's
+    one posted transaction is stamped `currency="BRL"` explicitly (matching
+    the account and the user's primary currency) so the only currency
+    mismatch in play is the hypothetical purchase's own `currency="USD"` -
+    keeping this test isolated to the one conversion this task controls.
+    """
+    account = Account(
+        id=uuid.uuid4(),
+        user_id=test_user.id,
+        workspace_id=test_workspace.id,
+        name="Simulacao FX",
+        type="checking",
+        balance=Decimal("0.00"),
+        currency="BRL",
+    )
+    session.add(account)
+    await session.commit()
+    session.add(
+        Transaction(
+            id=uuid.uuid4(),
+            user_id=test_user.id,
+            account_id=account.id,
+            description="Salario",
+            amount=Decimal("2000"),
+            currency="BRL",
+            date=date.today().replace(day=1),
+            type="credit",
+            source="manual",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    await session.commit()
+    await session.refresh(account)
+
+    import app.services.fx_rate_service as fx_rate_service
+
+    calls: list[tuple] = []
+
+    async def _tracking_sync_rates(*args, **kwargs):
+        calls.append((args, kwargs))
+        return 0
+
+    monkeypatch.setattr(fx_rate_service, "sync_rates", _tracking_sync_rates)
+
+    impact = await simulate_transaction(
+        session, test_workspace.id, test_user.id,
+        amount=Decimal("100"), currency="USD", type="debit",
+        tx_date=date.today(), account=account,
+    )
+
+    assert calls == []  # never reached the write/network path
+    assert impact.balance.currency == "BRL"
+    assert impact.balance.today_before == pytest.approx(2000.0)
+    assert impact.balance.today_after == pytest.approx(1900.0)  # 1:1 fallback: 100 USD -> 100 BRL
+    assert impact.balance.month_end_after == pytest.approx(1900.0)
+    assert impact.balance.ends_month_negative is False

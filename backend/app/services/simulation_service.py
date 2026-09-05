@@ -96,7 +96,15 @@ async def simulate_transaction(
     if currency == primary:
         amount_primary = Decimal(str(amount))
     else:
-        converted, _ = await convert(session, Decimal(str(amount)), currency, primary)
+        # allow_fetch=False: this service must never write or hit the
+        # network. A cache miss would otherwise fall through to
+        # sync_rates(), which does a DB upsert + commit and an outbound
+        # HTTP call to the FX provider - forbidden on a read-only preview
+        # path. We rely on whatever rate is already stored (or the 1:1
+        # fallback inside get_rate) instead.
+        converted, _ = await convert(
+            session, Decimal(str(amount)), currency, primary, allow_fetch=False
+        )
         amount_primary = converted
 
     # Debit takes money out, credit puts it in. The sign is the whole trick.

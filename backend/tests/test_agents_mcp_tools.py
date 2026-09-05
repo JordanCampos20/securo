@@ -476,6 +476,37 @@ async def test_propose_create_transaction_includes_impact(
     assert "today_after" in r["impact"]["balance"]
 
 
+async def test_propose_create_transaction_survives_impact_failure(
+    session: AsyncSession, ctx: CallContext, test_account, test_categories, monkeypatch
+):
+    """A broken simulation must not sink an otherwise-valid proposal.
+
+    The user already has a correct description/amount/account/category by
+    the time the preview is built; the impact is a nice-to-have on top of
+    that, not a precondition for returning a proposal.
+    """
+    import app.services.simulation_service as simulation_service
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("simulated failure")
+
+    monkeypatch.setattr(simulation_service, "simulate_transaction", _boom)
+
+    handler = REGISTRY["propose_create_transaction"].handler
+    r = await handler(
+        session=session, ctx=ctx,
+        description="Pizza",
+        amount=150.0,
+        type="debit",
+        account_id=str(test_account.id),
+        category_id=str(test_categories[0].id),
+    )
+
+    assert r["kind"] == "create_transaction"
+    assert r["impact"] is None
+    assert r["proposed"]["description"] == "Pizza"
+
+
 async def test_propose_create_transaction_unknown_account(
     session: AsyncSession, ctx: CallContext
 ):
