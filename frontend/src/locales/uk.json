@@ -2172,6 +2172,15 @@
         "deactivateRecurring": "Зупинити майбутні повторення «{{description}}» (історія збережена)",
         "deleteRecurring": "Назавжди видалити «{{description}}»",
         "createGoal": "«{{name}}» — ціль {{target}}, термін {{deadline}}"
+      },
+      "impact": {
+        "budget": "{{category}} {{before}} → {{after}} із {{limit}}",
+        "over": "перевищено на {{amount}}",
+        "monthEnd": "Кінець місяця {{before}} → {{after}}",
+        "bill": "Рахунок до оплати {{date}} · ліміт {{before}} → {{after}}",
+        "billNoLimit": "Рахунок до оплати {{date}}",
+        "limitOnly": "Ліміт {{before}} → {{after}}",
+        "overLimit": "понад ліміт картки"
       }
     },
     "conversation": {

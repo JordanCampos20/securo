@@ -456,6 +456,150 @@ async def test_propose_create_transaction_full(
     assert p["date"]  # default to today
 
 
+async def test_propose_create_transaction_includes_impact(
+    session: AsyncSession, ctx: CallContext, test_account, test_categories
+):
+    """The preview carries the impact block so the card can render numbers."""
+    handler = REGISTRY["propose_create_transaction"].handler
+    r = await handler(
+        session=session, ctx=ctx,
+        description="Pizza",
+        amount=150.0,
+        type="debit",
+        account_id=str(test_account.id),
+        category_id=str(test_categories[0].id),
+    )
+
+    assert r["kind"] == "create_transaction"
+    assert "impact" in r
+    assert "balance" in r["impact"]
+    assert "today_after" in r["impact"]["balance"]
+
+
+async def test_propose_create_transaction_survives_impact_failure(
+    session: AsyncSession, ctx: CallContext, test_account, test_categories, monkeypatch
+):
+    """A broken simulation must not sink an otherwise-valid proposal.
+
+    The user already has a correct description/amount/account/category by
+    the time the preview is built; the impact is a nice-to-have on top of
+    that, not a precondition for returning a proposal.
+    """
+    import app.services.simulation_service as simulation_service
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("simulated failure")
+
+    monkeypatch.setattr(simulation_service, "simulate_transaction", _boom)
+
+    handler = REGISTRY["propose_create_transaction"].handler
+    r = await handler(
+        session=session, ctx=ctx,
+        description="Pizza",
+        amount=150.0,
+        type="debit",
+        account_id=str(test_account.id),
+        category_id=str(test_categories[0].id),
+    )
+
+    assert r["kind"] == "create_transaction"
+    assert r["impact"] is None
+    assert r["proposed"]["description"] == "Pizza"
+
+
+async def test_propose_create_transaction_without_a_rate_omits_impact(
+    session: AsyncSession, ctx: CallContext, test_account, test_categories
+):
+    """A conversion with no cached rate must yield no impact, not a wrong one.
+
+    The simulation converts with `allow_fetch=False`, so a USD purchase with
+    no stored USD->BRL rate cannot be priced. It raises rather than falling
+    back to 1:1 (a ~5x error on the number the user is deciding against), and
+    the proposal degrades to `impact: None` - description, amount, account and
+    category are all still correct and still applicable.
+    """
+    handler = REGISTRY["propose_create_transaction"].handler
+    r = await handler(
+        session=session, ctx=ctx,
+        description="Pizza",
+        amount=150.0,
+        type="debit",
+        currency="USD",
+        account_id=str(test_account.id),
+        category_id=str(test_categories[0].id),
+    )
+
+    assert r["kind"] == "create_transaction"
+    assert r["impact"] is None
+    assert r["proposed"]["currency"] == "USD"
+
+
+async def test_impact_db_failure_leaves_the_session_usable_for_apply(
+    session: AsyncSession, test_user, test_account, test_categories, monkeypatch
+):
+    """A DB error inside the simulation must not poison the write that follows.
+
+    The broad `except` around `simulate_transaction` logs and continues, and
+    the `apply=true` branch then calls `create_transaction` on that *same*
+    session. Once a statement has errored, SQLAlchemy refuses every further
+    statement with `PendingRollbackError` until the transaction is rolled
+    back - so without an explicit rollback in the handler, a cosmetic impact
+    failure silently becomes a failed write.
+
+    The existing failure test raises a plain `RuntimeError`, which never
+    dirties the session and therefore never exercises this.
+
+    The failure injected here is an `IntegrityError` raised inside
+    `Session.flush()` — the shape SQLAlchemy reacts to by capturing the
+    exception on the transaction and refusing every later statement, which is
+    what makes the "session left unusable" state reproducible on the suite's
+    SQLite. On PostgreSQL any failed statement has the same effect from the
+    server side (`current transaction is aborted`), so the guard matters for a
+    wider class of errors than this one.
+    """
+    import app.services.simulation_service as simulation_service
+    from app.models.account import Account
+    from app.models.transaction import Transaction
+    from sqlalchemy import select
+
+    async def _db_boom(session, *args, **kwargs):
+        # Duplicate primary key -> IntegrityError on flush.
+        session.add(
+            Account(
+                id=test_account.id,
+                user_id=test_user.id,
+                name="Duplicata",
+                type="checking",
+                currency="BRL",
+            )
+        )
+        await session.flush()
+
+    monkeypatch.setattr(simulation_service, "simulate_transaction", _db_boom)
+
+    handler = REGISTRY["propose_create_transaction"].handler
+    ctx = CallContext(user_id=test_user.id, external=True)
+
+    r = await handler(
+        session=session, ctx=ctx,
+        description="Pizza pos-falha",
+        amount=150.0,
+        type="debit",
+        account_id=str(test_account.id),
+        category_id=str(test_categories[0].id),
+        apply=True,
+    )
+
+    assert r["impact"] is None
+    assert r.get("error") is None
+    assert r.get("applied") is True
+
+    row = (await session.execute(
+        select(Transaction).where(Transaction.id == uuid.UUID(r["id"]))
+    )).scalar_one()
+    assert row.description == "Pizza pos-falha"
+
+
 async def test_propose_create_transaction_unknown_account(
     session: AsyncSession, ctx: CallContext
 ):

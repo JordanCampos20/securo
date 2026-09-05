@@ -2164,6 +2164,15 @@
         "deactivateRecurring": "Zukünftige Vorkommen von “{{description}}” stoppen (Verlauf bleibt erhalten)",
         "deleteRecurring": "“{{description}}” dauerhaft löschen",
         "createGoal": "“{{name}}” — Ziel {{target}}, Frist {{deadline}}"
+      },
+      "impact": {
+        "budget": "{{category}} {{before}} → {{after}} von {{limit}}",
+        "over": "überzogen um {{amount}}",
+        "monthEnd": "Monatsende {{before}} → {{after}}",
+        "bill": "Abrechnung fällig am {{date}} · Limit {{before}} → {{after}}",
+        "billNoLimit": "Abrechnung fällig am {{date}}",
+        "limitOnly": "Limit {{before}} → {{after}}",
+        "overLimit": "über dem Kreditlimit"
       }
     },
     "conversation": {

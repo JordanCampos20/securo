@@ -2163,6 +2163,15 @@
         "deactivateRecurring": "Stop future occurrences of “{{description}}” (history kept)",
         "deleteRecurring": "Permanently delete “{{description}}”",
         "createGoal": "“{{name}}” — target {{target}}, deadline {{deadline}}"
+      },
+      "impact": {
+        "budget": "{{category}} {{before}} → {{after}} of {{limit}}",
+        "over": "over by {{amount}}",
+        "monthEnd": "Month end {{before}} → {{after}}",
+        "bill": "Bill due {{date}} · limit {{before}} → {{after}}",
+        "billNoLimit": "Bill due {{date}}",
+        "limitOnly": "Limit {{before}} → {{after}}",
+        "overLimit": "over the card limit"
       }
     },
     "conversation": {

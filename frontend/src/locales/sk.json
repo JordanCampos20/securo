@@ -2299,6 +2299,15 @@
         "deactivateRecurring": "Zastaviť budúce výskyty „{{description}}“ (história zostane)",
         "deleteRecurring": "Natrvalo vymazať „{{description}}“",
         "createGoal": "„{{name}}“ — cieľová suma {{target}}, termín {{deadline}}"
+      },
+      "impact": {
+        "budget": "{{category}} {{before}} → {{after}} z {{limit}}",
+        "over": "prekročené o {{amount}}",
+        "monthEnd": "Koniec mesiaca {{before}} → {{after}}",
+        "bill": "Výpis so splatnosťou {{date}} · limit {{before}} → {{after}}",
+        "billNoLimit": "Výpis so splatnosťou {{date}}",
+        "limitOnly": "Limit {{before}} → {{after}}",
+        "overLimit": "nad limitom karty"
       }
     },
     "conversation": {

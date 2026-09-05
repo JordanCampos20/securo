@@ -2172,6 +2172,15 @@
         "deactivateRecurring": "Остановить будущие повторения «{{description}}» (история сохранена)",
         "deleteRecurring": "Навсегда удалить «{{description}}»",
         "createGoal": "«{{name}}» — цель {{target}}, срок {{deadline}}"
+      },
+      "impact": {
+        "budget": "{{category}} {{before}} → {{after}} из {{limit}}",
+        "over": "превышено на {{amount}}",
+        "monthEnd": "Конец месяца {{before}} → {{after}}",
+        "bill": "Счёт к оплате {{date}} · лимит {{before}} → {{after}}",
+        "billNoLimit": "Счёт к оплате {{date}}",
+        "limitOnly": "Лимит {{before}} → {{after}}",
+        "overLimit": "сверх лимита карты"
       }
     },
     "conversation": {

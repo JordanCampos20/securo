@@ -2149,6 +2149,15 @@
         "deactivateRecurring": "Interrompi le occorrenze future di “{{description}}” (cronologia mantenuta)",
         "deleteRecurring": "Elimina definitivamente “{{description}}”",
         "createGoal": "“{{name}}” — obiettivo {{target}}, scadenza {{deadline}}"
+      },
+      "impact": {
+        "budget": "{{category}} {{before}} → {{after}} di {{limit}}",
+        "over": "superato di {{amount}}",
+        "monthEnd": "Fine mese {{before}} → {{after}}",
+        "bill": "Estratto conto in scadenza il {{date}} · limite {{before}} → {{after}}",
+        "billNoLimit": "Estratto conto in scadenza il {{date}}",
+        "limitOnly": "Limite {{before}} → {{after}}",
+        "overLimit": "oltre il limite della carta"
       }
     },
     "conversation": {
