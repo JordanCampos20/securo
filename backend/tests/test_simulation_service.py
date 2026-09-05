@@ -74,19 +74,14 @@ async def test_future_purchase_leaves_today_untouched(
 ):
     """A purchase a few days out does not move today, but does move month end.
 
-    Anchored 3 days after today and clamped to the last day of the month, so
-    the offset never spills into the next month (which would silently change
-    which month the calendar is built for) and, unlike anchoring on a fixed
-    day-of-month, is never accidentally equal to "today" itself regardless of
-    what day the suite happens to run on.
+    `today + 3 days` is always strictly after today, so today is untouched
+    regardless of what day the suite happens to run on. Month end is measured
+    for the purchase's own month (the calendar is built for `tx_date`'s
+    month), so the delta lands there unconditionally even if the purchase
+    date falls in the following calendar month - there is no "spills into
+    next month" hazard to guard against here.
     """
-    today = date.today()
-    if today.month == 12:
-        next_month_first = today.replace(year=today.year + 1, month=1, day=1)
-    else:
-        next_month_first = today.replace(month=today.month + 1, day=1)
-    last_day_of_month = (next_month_first - timedelta(days=1)).day
-    future = today.replace(day=min(today.day + 3, last_day_of_month))
+    future = date.today() + timedelta(days=3)
 
     impact = await simulate_transaction(
         session, test_workspace.id, test_user.id,
