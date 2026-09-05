@@ -273,3 +273,80 @@ async def test_accrual_mode_buckets_the_card_purchase_into_the_bill_month(
 
     # The budget row consulted is the bill month's, which has no budget set.
     assert impact.budget is None
+
+
+@pytest.mark.asyncio
+async def test_card_purchase_reports_bill_date_and_remaining_limit(
+    session: AsyncSession, test_user, test_workspace, sim_card
+):
+    impact = await simulate_transaction(
+        session, test_workspace.id, test_user.id,
+        amount=Decimal("150"), currency="BRL", type="debit",
+        tx_date=date.today().replace(day=5), account=sim_card,
+    )
+
+    assert impact.credit_card is not None
+    # R$3000 limit with R$500 owed leaves R$2500; the pizza takes it to R$2350.
+    assert impact.credit_card.available_before == pytest.approx(2500.0)
+    assert impact.credit_card.available_after == pytest.approx(2350.0)
+    assert impact.credit_card.exceeds_credit_limit is False
+    assert impact.credit_card.bill_due_date > date.today().replace(day=5)
+
+
+@pytest.mark.asyncio
+async def test_purchase_over_the_limit_is_flagged(
+    session: AsyncSession, test_user, test_workspace, sim_card
+):
+    impact = await simulate_transaction(
+        session, test_workspace.id, test_user.id,
+        amount=Decimal("2600"), currency="BRL", type="debit",
+        tx_date=date.today().replace(day=5), account=sim_card,
+    )
+
+    assert impact.credit_card.exceeds_credit_limit is True
+    assert impact.credit_card.available_after == pytest.approx(-100.0)
+
+
+@pytest.mark.asyncio
+async def test_card_without_a_limit_still_reports_the_bill_date(
+    session: AsyncSession, test_user, test_workspace
+):
+    card = Account(
+        id=uuid.uuid4(),
+        user_id=test_user.id,
+        workspace_id=test_workspace.id,
+        name="Cartao sem limite",
+        type="credit_card",
+        balance=Decimal("0.00"),
+        currency="BRL",
+        credit_limit=None,
+        statement_close_day=20,
+        payment_due_day=1,
+    )
+    session.add(card)
+    await session.commit()
+
+    impact = await simulate_transaction(
+        session, test_workspace.id, test_user.id,
+        amount=Decimal("150"), currency="BRL", type="debit",
+        tx_date=date.today().replace(day=5), account=card,
+    )
+
+    assert impact.credit_card is not None
+    assert impact.credit_card.bill_due_date is not None
+    assert impact.credit_card.available_before is None
+    assert impact.credit_card.available_after is None
+    assert impact.credit_card.exceeds_credit_limit is False
+
+
+@pytest.mark.asyncio
+async def test_non_card_account_has_no_credit_card_block(
+    session: AsyncSession, test_user, test_workspace, sim_account
+):
+    impact = await simulate_transaction(
+        session, test_workspace.id, test_user.id,
+        amount=Decimal("150"), currency="BRL", type="debit",
+        tx_date=date.today(), account=sim_account,
+    )
+
+    assert impact.credit_card is None

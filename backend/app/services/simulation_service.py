@@ -17,7 +17,61 @@ from app.core.config import get_settings
 from app.models.account import Account
 from app.models.category import Category
 from app.models.user import User
-from app.schemas.simulation import BalanceImpact, BudgetImpact, TransactionImpact
+from app.schemas.simulation import (
+    BalanceImpact,
+    BudgetImpact,
+    CreditCardImpact,
+    TransactionImpact,
+)
+
+
+def _credit_card_impact(
+    account: Account,
+    *,
+    tx_date: date,
+    type: str,
+    amount_primary: Decimal,
+) -> Optional[CreditCardImpact]:
+    """Which bill the purchase lands on, and what it does to the limit.
+
+    Context only - this never feeds the balance or budget numbers. A card
+    with no limit configured still reports its bill date; there is simply
+    nothing to measure the available credit against.
+    """
+    if account.type != "credit_card":
+        return None
+
+    from app.services.credit_card_service import (
+        compute_available_credit,
+        compute_effective_date,
+    )
+
+    bill_due_date = compute_effective_date(
+        tx_date,
+        getattr(account, "statement_close_day", None),
+        getattr(account, "payment_due_day", None),
+    )
+
+    limit = getattr(account, "credit_limit", None)
+    if limit is None:
+        return CreditCardImpact(
+            bill_due_date=bill_due_date,
+            available_before=None,
+            available_after=None,
+            exceeds_credit_limit=False,
+        )
+
+    current = Decimal(str(account.balance))
+    spend = amount_primary if type == "debit" else -amount_primary
+    before = compute_available_credit(Decimal(str(limit)), current)
+    after = compute_available_credit(Decimal(str(limit)), current - spend)
+
+    return CreditCardImpact(
+        bill_due_date=bill_due_date,
+        available_before=round(float(before), 2),
+        available_after=round(float(after), 2),
+        exceeds_credit_limit=after < 0,
+    )
 
 
 async def simulate_transaction(
@@ -86,6 +140,10 @@ async def simulate_transaction(
         budget_month=bucket_date.replace(day=1), primary=primary,
     )
 
+    credit_card = _credit_card_impact(
+        account, tx_date=tx_date, type=type, amount_primary=amount_primary
+    )
+
     return TransactionImpact(
         balance=BalanceImpact(
             today_before=round(today_before, 2),
@@ -96,7 +154,7 @@ async def simulate_transaction(
             currency=primary,
         ),
         budget=budget,
-        credit_card=None,
+        credit_card=credit_card,
     )
 
 
