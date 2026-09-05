@@ -12,12 +12,12 @@
 
 ## Global Constraints
 
-- **Read-only.** `simulation_service` never writes, never opens a transaction, never persists a simulation. No Alembic migration in this plan.
+- **Read-only.** `simulation_service` never opens a transaction of its own and never persists a simulation. No Alembic migration in this plan. The guarantee has a documented edge: the simulation's *own* FX conversions pass `allow_fetch=False` and never call `sync_rates()`, but the shared read services it calls (`get_transaction_calendar`, `_balance_at`, `get_budget_vs_actual`) still convert with `allow_fetch=True`, so an already-booked transaction in a non-primary currency with no cached rate can still reach `sync_rates()` from inside them - a DB upsert, a commit and an outbound HTTP call. Threading `allow_fetch` through those three services is a known follow-up, out of scope here.
 - **Never override the global accounting mode.** Budget bucketing uses `reporting_date_col()` and honors `credit_card_accounting_mode` so the simulation always agrees with the Budgets screen. Note the inverted naming (`_query_filters.py:89-92`): `cash` buckets by `Transaction.date`, `accrual` by `effective_date`. Default is `cash`.
 - **Facts, not sentences.** The service returns numbers and boolean flags. Prose is the LLM's job; layout is the card's job.
 - **Blocks are all-or-nothing.** `budget` and `credit_card` are either fully populated or `None`. Never half-filled.
 - **Reference month** for the calendar is always the month of `tx_date`, not the current month.
-- **All 13 locales** must be updated together — `frontend/src/locales/i18n.test.ts` compares keys and placeholders across every file and fails otherwise.
+- **All 15 locales** (`de, el, en, es, fr, hi, it, ja, nl, pl, pt-BR, pt-PT, ru, sk, uk`) must be updated together — `frontend/src/locales/i18n.test.ts` compares keys and placeholders across every file and fails otherwise.
 - Commit convention: Conventional Commits, English, lower-case subject, no trailing period, <=72 chars. Never `git add -A`.
 - Backend tests run from `backend/`: `pytest`. Frontend tests run from `frontend/`: `npm run test`.
 
@@ -32,7 +32,7 @@
 | `backend/tests/test_agents_mcp_tools.py` (modify) | `impact` is present; the `apply=true` write path is unchanged |
 | `frontend/src/components/agents/proposal-card.tsx` (modify) | Render up to three impact lines |
 | `frontend/src/components/agents/proposal-card.test.tsx` (create) | Lines appear and disappear with their blocks |
-| `frontend/src/locales/*.json` (modify, 13 files) | `agents.proposal.impact.*` keys |
+| `frontend/src/locales/*.json` (modify, 15 files) | `agents.proposal.impact.*` keys |
 
 ---
 
@@ -970,8 +970,12 @@ In `backend/mcp_server/tools/proposals.py`, replace the `preview` assignment in 
 ```python
     from app.services.simulation_service import simulate_transaction
 
-    # Read-only, computed before any write path is considered. Every
-    # proposal gets it: three reads inside a turn already waiting on the LLM.
+    # Read-only, computed before any write path is considered. Every proposal
+    # gets it, inside a turn already waiting on the LLM. Not three cheap reads:
+    # whenever a category is present, `get_budget_vs_actual` builds the whole
+    # workspace budget report for the current *and* previous month, per-row FX
+    # included. Short-circuiting it to categories that actually carry a budget
+    # is a known follow-up.
     impact = await simulate_transaction(
         session,
         ws_id,
@@ -1036,19 +1040,19 @@ git commit -m "feat(agents): show purchase impact in transaction proposals"
 
 ### Task 6: Render the impact on the proposal card
 
-The locale keys ship **in this same task**. `frontend/src/locales/i18n.test.ts` compares keys across all 13 files, so adding them to `en.json` alone leaves the suite red — this is one deliverable, not two.
+The locale keys ship **in this same task**. `frontend/src/locales/i18n.test.ts` compares keys across all 15 files, so adding them to `en.json` alone leaves the suite red — this is one deliverable, not two.
 
 **Files:**
 - Modify: `frontend/src/components/agents/proposal-card.tsx`
 - Create: `frontend/src/components/agents/proposal-card.test.tsx`
-- Modify: `frontend/src/locales/{de,en,es,fr,it,nl,pl,pt-BR,pt-PT,ru,sk,uk}.json` (13 files)
+- Modify: `frontend/src/locales/{de,el,en,es,fr,hi,it,ja,nl,pl,pt-BR,pt-PT,ru,sk,uk}.json` (15 files)
 
 **Interfaces:**
 - Consumes: `preview.impact` from Task 5, shaped as `TransactionImpact.model_dump(mode="json")` — `{ balance: {today_before, today_after, month_end_before, month_end_after, ends_month_negative, currency}, budget: {category_name, limit, spent_before, spent_after, remaining_after, exceeds_budget, currency} | null, credit_card: {bill_due_date, available_before, available_after, exceeds_credit_limit} | null }`.
 - Consumes: `formatCurrency` from `frontend/src/lib/format.ts`.
 - Produces: nothing other tasks depend on. This is the last task.
 
-- [ ] **Step 1: Add the locale keys to all 13 files**
+- [ ] **Step 1: Add the locale keys to all 15 files**
 
 Under `agents.proposal`, add an `impact` object. English (`en.json`):
 
@@ -1354,7 +1358,7 @@ Checked after writing, before handoff.
 | MCP preview carries `impact`; write path unchanged | 5 |
 | Tool description teaches one-sentence narration | 5 |
 | Card renders three lines, each hidden with its block | 6 |
-| 13 locales with matching placeholders | 6 |
+| 15 locales with matching placeholders | 6 |
 | No endpoint, no migration, no other `propose_*` touched | enforced by Global Constraints |
 
 **Type consistency** — `simulate_transaction` keeps the same keyword-only signature from Task 1 through Task 5. `TransactionImpact.balance` is non-optional everywhere; `budget` and `credit_card` are `Optional` in Python and `?: T | null` in TypeScript, matching `model_dump(mode="json")` output. `BudgetVsActual.budget_amount` / `.actual_amount` are used with the names the real schema defines.

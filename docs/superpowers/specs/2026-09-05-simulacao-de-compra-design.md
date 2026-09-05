@@ -58,9 +58,21 @@ async def simulate_transaction(
 ) -> TransactionImpact
 ```
 
-It writes nothing, opens no transaction, persists no simulation. It takes an
-already-validated hypothetical purchase, reads current state, returns the
-impact. Pure read.
+It takes an already-validated hypothetical purchase, reads current state, and
+returns the impact. It opens no transaction of its own and persists no
+simulation.
+
+**How far "never writes" actually reaches.** The simulation's *own* FX
+conversions pass `allow_fetch=False`, so they resolve from cached rates or
+refuse - they never call `sync_rates()`. That guarantee does **not** extend to
+the shared read services it calls. `get_transaction_calendar()`, `_balance_at()`
+and `get_budget_vs_actual()` all convert with the default `allow_fetch=True`,
+so an already-booked transaction in a non-primary currency with no cached rate
+can still reach `sync_rates()` from inside them - a DB upsert, a commit, and an
+outbound HTTP call to the FX provider. Threading `allow_fetch` through those
+three services is a known follow-up, deliberately out of scope here; until then
+the honest statement is *the simulation never fetches on its own behalf, and
+inherited reads may*.
 
 ### Reused building blocks
 
@@ -117,10 +129,11 @@ class BalanceImpact(BaseModel):
     currency: str
 
 class CreditCardImpact(BaseModel):
-    bill_due_date: date
+    bill_due_date: date | None       # None when the card has no cycle days set
     available_before: float | None   # None when the card has no limit set
     available_after: float | None
     exceeds_credit_limit: bool
+    currency: str                    # the card's own currency, not the primary one
 
 class TransactionImpact(BaseModel):
     budget: BudgetImpact | None
@@ -201,6 +214,15 @@ R$2,150."*
 - Card with no `credit_limit` set -> `available_before` / `available_after` are
   `None` and `exceeds_credit_limit` is `False`; the block still carries
   `bill_due_date`.
+- Card with no `statement_close_day` / `payment_due_day` -> `bill_due_date` is
+  `None`. `compute_effective_date()` returns `tx_date` unchanged without the
+  cycle metadata, and reporting that would tell the user the bill is due the
+  day they buy. Both columns are nullable and a hand-added card commonly has
+  neither. The limit half of the block is unaffected.
+- Card debt is resolved the way the rest of the app resolves it (the signed
+  transaction sum for a manual account, the negated provider balance for a
+  connected one) - never the raw `Account.balance` column, which is a frozen
+  opening balance for manual accounts and positive-for-debt for connected ones.
 - Foreign currency -> converted via `fx_rate_service.convert()`, like the rest
   of the app.
 
@@ -224,10 +246,14 @@ preview = {
 Nothing else changes. `_can_apply()` and the entire write path stay untouched —
 `impact` is pure read, computed before and independent of any write.
 
-Impact is computed **always**, not on demand. Cost is three reads (balance,
-one month of calendar, budgets), inside a chat turn already waiting on the
-LLM. An `include_impact` flag would be configuration to save what does not
-hurt.
+Impact is computed **always**, not on demand, inside a chat turn already
+waiting on the LLM. The cost is not three cheap reads: balance and one month
+of calendar are, but `get_budget_vs_actual()` builds the **entire workspace
+budget report for the current *and* previous month**, per-row FX conversions
+included, whenever a category is present - and the simulation then reads a
+single row out of it. Short-circuiting that call to categories that actually
+carry a budget is a known follow-up, not done here. An `include_impact` flag
+would still be configuration to save what does not hurt.
 
 **The tool description matters as much as the code.** `_PROPOSAL_PREFACE`
 (`:64-77`) exists precisely because the LLM reads these descriptions to decide
@@ -250,8 +276,9 @@ Bill          due Oct 10 · limit R$ 2,300 -> R$ 2,150
 Each line disappears when its block is `None`. With no budget configured the
 card shows balance only — no empty space, no em-dash placeholders.
 
-`frontend/src/locales/i18n.test.ts` compares keys across all 13 locales and
-validates placeholders, so **new keys must be translated in all 13**. This is
+`frontend/src/locales/i18n.test.ts` compares keys across all 15 locales and
+validates placeholders, so **new keys must be translated in all 15**
+(`de, el, en, es, fr, hi, it, ja, nl, pl, pt-BR, pt-PT, ru, sk, uk`). This is
 the real cost of the frontend change.
 
 ## Out of scope
@@ -316,7 +343,7 @@ All three lines render with full data; each disappears when its block is
 
 ### `frontend/src/locales/i18n.test.ts` (existing)
 
-Passes for free once all 13 translations land. It is the safety net that
+Passes for free once all 15 translations land. It is the safety net that
 catches a forgotten locale.
 
 ## Risks
@@ -330,7 +357,7 @@ catches a forgotten locale.
   users are in. The feature still answers the balance question, but the
   yardstick the user chose is unavailable until they set a budget for the
   category.
-- **13 translations** is mechanical work that the parity test will not let us
+- **15 translations** is mechanical work that the parity test will not let us
   skip.
 
 ## Next step
