@@ -583,8 +583,6 @@ async def test_accrual_mode_buckets_the_card_purchase_into_the_bill_month(
 ):
     """In accrual mode the purchase counts in the bill month, so this month's
     budget - which is where `food_budget` lives - must be untouched."""
-    import app.services.simulation_service as sim
-
     async def _accrual(_session):
         return "accrual"
 
@@ -1060,6 +1058,7 @@ Under `agents.proposal`, add an `impact` object. English (`en.json`):
   "over": "over by {{amount}}",
   "monthEnd": "Month end {{before}} → {{after}}",
   "bill": "Bill due {{date}} · limit {{before}} → {{after}}",
+  "billNoLimit": "Bill due {{date}}",
   "overLimit": "over the card limit"
 }
 ```
@@ -1072,11 +1071,12 @@ Brazilian Portuguese (`pt-BR.json`):
   "over": "estourou em {{amount}}",
   "monthEnd": "Fim do mês {{before}} → {{after}}",
   "bill": "Fatura em {{date}} · limite {{before}} → {{after}}",
+  "billNoLimit": "Fatura em {{date}}",
   "overLimit": "acima do limite do cartão"
 }
 ```
 
-Translate the same five keys for `de`, `es`, `fr`, `it`, `nl`, `pl`, `pt-PT`, `ru`, `sk`, `uk`. **Every file must carry all five keys with the exact same placeholders** (`{{category}}`, `{{before}}`, `{{after}}`, `{{limit}}`, `{{amount}}`, `{{date}}`) — the parity test checks placeholders, not just key names.
+Translate the same six keys for `de`, `es`, `fr`, `it`, `nl`, `pl`, `pt-PT`, `ru`, `sk`, `uk`. **Every file must carry all six keys with the exact same placeholders** (`{{category}}`, `{{before}}`, `{{after}}`, `{{limit}}`, `{{amount}}`, `{{date}}`) — the parity test checks placeholders, not just key names.
 
 - [ ] **Step 2: Verify locale parity before touching the component**
 
@@ -1274,13 +1274,17 @@ function ImpactLines({ impact }: { impact?: Impact | null }) {
           after: money(impact.balance.month_end_after, impact.balance.currency),
         })}
       </div>
-      {impact.credit_card && impact.credit_card.available_before !== null && (
+      {impact.credit_card && (
         <div data-testid="impact-bill" className="text-muted-foreground">
-          {t('agents.proposal.impact.bill', {
-            date: impact.credit_card.bill_due_date,
-            before: money(impact.credit_card.available_before, impact.balance.currency),
-            after: money(impact.credit_card.available_after ?? 0, impact.balance.currency),
-          })}
+          {impact.credit_card.available_before === null
+            ? t('agents.proposal.impact.billNoLimit', {
+                date: impact.credit_card.bill_due_date,
+              })
+            : t('agents.proposal.impact.bill', {
+                date: impact.credit_card.bill_due_date,
+                before: money(impact.credit_card.available_before, impact.balance.currency),
+                after: money(impact.credit_card.available_after ?? 0, impact.balance.currency),
+              })}
           {impact.credit_card.exceeds_credit_limit && (
             <span className="ml-1.5 text-amber-700 dark:text-amber-400">
               {t('agents.proposal.impact.overLimit')}
