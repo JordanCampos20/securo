@@ -2149,6 +2149,14 @@
         "deactivateRecurring": "Detener las próximas ocurrencias de “{{description}}” (se conserva el historial)",
         "deleteRecurring": "Eliminar permanentemente “{{description}}”",
         "createGoal": "“{{name}}” — objetivo {{target}}, fecha límite {{deadline}}"
+      },
+      "impact": {
+        "budget": "{{category}} {{before}} → {{after}} de {{limit}}",
+        "over": "superado en {{amount}}",
+        "monthEnd": "Fin de mes {{before}} → {{after}}",
+        "bill": "Factura vence {{date}} · límite {{before}} → {{after}}",
+        "billNoLimit": "Factura vence {{date}}",
+        "overLimit": "por encima del límite de la tarjeta"
       }
     },
     "conversation": {

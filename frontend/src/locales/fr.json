@@ -2164,6 +2164,14 @@
         "deactivateRecurring": "Arrêter les occurrences futures de « {{description}} » (historique conservé)",
         "deleteRecurring": "Supprimer définitivement « {{description}} »",
         "createGoal": "« {{name}} » — cible {{target}}, échéance {{deadline}}"
+      },
+      "impact": {
+        "budget": "{{category}} {{before}} → {{after}} sur {{limit}}",
+        "over": "dépassé de {{amount}}",
+        "monthEnd": "Fin de mois {{before}} → {{after}}",
+        "bill": "Facture due le {{date}} · limite {{before}} → {{after}}",
+        "billNoLimit": "Facture due le {{date}}",
+        "overLimit": "au-dessus de la limite de la carte"
       }
     },
     "conversation": {

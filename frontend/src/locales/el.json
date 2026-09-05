@@ -2163,6 +2163,14 @@
         "deactivateRecurring": "Διακοπή μελλοντικών εμφανίσεων του «{{description}}» (διατήρηση ιστορικού)",
         "deleteRecurring": "Οριστική διαγραφή του «{{description}}»",
         "createGoal": "«{{name}}» — στόχος {{target}}, προθεσμία {{deadline}}"
+      },
+      "impact": {
+        "budget": "{{category}} {{before}} → {{after}} από {{limit}}",
+        "over": "υπέρβαση κατά {{amount}}",
+        "monthEnd": "Τέλος μήνα {{before}} → {{after}}",
+        "bill": "Λογαριασμός λήγει στις {{date}} · όριο {{before}} → {{after}}",
+        "billNoLimit": "Λογαριασμός λήγει στις {{date}}",
+        "overLimit": "πάνω από το πιστωτικό όριο"
       }
     },
     "conversation": {

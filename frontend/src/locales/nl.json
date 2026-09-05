@@ -2165,6 +2165,14 @@
         "deactivateRecurring": "Stop toekomstige exemplaren van “{{description}}” (geschiedenis bewaard)",
         "deleteRecurring": "“{{description}}” definitief verwijderen",
         "createGoal": "“{{name}}” — doel {{target}}, deadline {{deadline}}"
+      },
+      "impact": {
+        "budget": "{{category}} {{before}} → {{after}} van {{limit}}",
+        "over": "overschreden met {{amount}}",
+        "monthEnd": "Einde maand {{before}} → {{after}}",
+        "bill": "Afschrift verschuldigd op {{date}} · limiet {{before}} → {{after}}",
+        "billNoLimit": "Afschrift verschuldigd op {{date}}",
+        "overLimit": "boven de kredietlimiet"
       }
     },
     "conversation": {

@@ -2163,6 +2163,14 @@
         "deactivateRecurring": "“{{description}}” की आगे की घटनाएँ रोकें (इतिहास रखा जाता है)",
         "deleteRecurring": "“{{description}}” को स्थायी रूप से हटाएँ",
         "createGoal": "“{{name}}” — लक्ष्य {{target}}, समय-सीमा {{deadline}}"
+      },
+      "impact": {
+        "budget": "{{category}} {{before}} → {{after}}, {{limit}} में से",
+        "over": "{{amount}} अधिक",
+        "monthEnd": "माह के अंत में {{before}} → {{after}}",
+        "bill": "{{date}} को देय बिल · सीमा {{before}} → {{after}}",
+        "billNoLimit": "{{date}} को देय बिल",
+        "overLimit": "कार्ड की सीमा से अधिक"
       }
     },
     "conversation": {

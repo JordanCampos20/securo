@@ -2250,6 +2250,14 @@
         "deactivateRecurring": "Zatrzymaj przyszłe wystąpienia „{{description}}” (historia zachowana)",
         "deleteRecurring": "Trwale usuń „{{description}}”",
         "createGoal": "„{{name}}” — cel {{target}}, termin {{deadline}}"
+      },
+      "impact": {
+        "budget": "{{category}} {{before}} → {{after}} z {{limit}}",
+        "over": "przekroczono o {{amount}}",
+        "monthEnd": "Koniec miesiąca {{before}} → {{after}}",
+        "bill": "Rachunek z terminem {{date}} · limit {{before}} → {{after}}",
+        "billNoLimit": "Rachunek z terminem {{date}}",
+        "overLimit": "powyżej limitu karty"
       }
     },
     "conversation": {

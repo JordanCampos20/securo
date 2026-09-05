@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { AlertCircle, Check, ChevronDown, ChevronRight, Loader2, Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
+import { formatCurrency } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
   budgets,
@@ -25,6 +26,38 @@ type ProposalKind =
   | 'cancel_recurring_transaction'
   | 'create_goal'
 
+type BudgetImpact = {
+  category_name: string
+  limit: number
+  spent_before: number
+  spent_after: number
+  remaining_after: number
+  exceeds_budget: boolean
+  currency: string
+}
+
+type BalanceImpact = {
+  today_before: number
+  today_after: number
+  month_end_before: number
+  month_end_after: number
+  ends_month_negative: boolean
+  currency: string
+}
+
+type CreditCardImpact = {
+  bill_due_date: string
+  available_before: number | null
+  available_after: number | null
+  exceeds_credit_limit: boolean
+}
+
+type Impact = {
+  balance: BalanceImpact
+  budget?: BudgetImpact | null
+  credit_card?: CreditCardImpact | null
+}
+
 interface ProposalData {
   kind?: ProposalKind
   proposed?: Record<string, unknown>
@@ -37,6 +70,7 @@ interface ProposalData {
   mode?: 'deactivate' | 'delete'
   apply_endpoint?: string
   error?: string
+  impact?: Impact | null
 }
 
 interface Props {
@@ -140,6 +174,7 @@ export function ProposalCard({ toolCallId, data }: Props) {
             </span>
           </div>
           <div className="mt-1 text-muted-foreground text-[13px] leading-snug">{summary}</div>
+          <ImpactLines impact={data.impact} />
           <SplitPreview proposed={data.proposed} />
         </div>
         <div className="shrink-0 flex items-center gap-1.5">
@@ -172,6 +207,69 @@ export function ProposalCard({ toolCallId, data }: Props) {
         <pre className="border-t px-3 py-2 text-[11px] leading-snug font-mono bg-background/60 overflow-x-auto">
           {safeStringify(data)}
         </pre>
+      )}
+    </div>
+  )
+}
+
+function ImpactLines({ impact }: { impact?: Impact | null }) {
+  const { t } = useTranslation()
+  if (!impact) return null
+
+  const money = (v: number, currency: string) => formatCurrency(v, currency)
+
+  return (
+    <div className="mt-1.5 space-y-0.5 text-[13px] leading-snug">
+      {impact.budget && (
+        <div data-testid="impact-budget" className="text-muted-foreground">
+          {t('agents.proposal.impact.budget', {
+            category: impact.budget.category_name,
+            before: money(impact.budget.spent_before, impact.budget.currency),
+            after: money(impact.budget.spent_after, impact.budget.currency),
+            limit: money(impact.budget.limit, impact.budget.currency),
+          })}
+          {impact.budget.exceeds_budget && (
+            <span className="ml-1.5 text-amber-700 dark:text-amber-400">
+              {t('agents.proposal.impact.over', {
+                amount: money(
+                  Math.abs(impact.budget.remaining_after),
+                  impact.budget.currency,
+                ),
+              })}
+            </span>
+          )}
+        </div>
+      )}
+      <div
+        data-testid="impact-month-end"
+        className={
+          impact.balance.ends_month_negative
+            ? 'text-red-600 dark:text-red-400'
+            : 'text-muted-foreground'
+        }
+      >
+        {t('agents.proposal.impact.monthEnd', {
+          before: money(impact.balance.month_end_before, impact.balance.currency),
+          after: money(impact.balance.month_end_after, impact.balance.currency),
+        })}
+      </div>
+      {impact.credit_card && (
+        <div data-testid="impact-bill" className="text-muted-foreground">
+          {impact.credit_card.available_before === null
+            ? t('agents.proposal.impact.billNoLimit', {
+                date: impact.credit_card.bill_due_date,
+              })
+            : t('agents.proposal.impact.bill', {
+                date: impact.credit_card.bill_due_date,
+                before: money(impact.credit_card.available_before, impact.balance.currency),
+                after: money(impact.credit_card.available_after ?? 0, impact.balance.currency),
+              })}
+          {impact.credit_card.exceeds_credit_limit && (
+            <span className="ml-1.5 text-amber-700 dark:text-amber-400">
+              {t('agents.proposal.impact.overLimit')}
+            </span>
+          )}
+        </div>
       )}
     </div>
   )

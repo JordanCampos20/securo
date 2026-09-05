@@ -2163,6 +2163,14 @@
         "deactivateRecurring": "「{{description}}」の今後の発生を停止(履歴は保持)",
         "deleteRecurring": "「{{description}}」を完全に削除",
         "createGoal": "「{{name}}」 — 目標{{target}}、期日{{deadline}}"
+      },
+      "impact": {
+        "budget": "{{category}} {{before}} → {{after}}(上限{{limit}})",
+        "over": "{{amount}}超過",
+        "monthEnd": "月末 {{before}} → {{after}}",
+        "bill": "支払期日{{date}}の請求 · 利用枠{{before}} → {{after}}",
+        "billNoLimit": "支払期日{{date}}の請求",
+        "overLimit": "利用枠を超過"
       }
     },
     "conversation": {
