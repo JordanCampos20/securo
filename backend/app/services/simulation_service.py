@@ -30,13 +30,19 @@ def _credit_card_impact(
     *,
     tx_date: date,
     type: str,
-    amount_primary: Decimal,
+    amount_account_currency: Decimal,
 ) -> Optional[CreditCardImpact]:
     """Which bill the purchase lands on, and what it does to the limit.
 
     Context only - this never feeds the balance or budget numbers. A card
     with no limit configured still reports its bill date; there is simply
     nothing to measure the available credit against.
+
+    `account.balance` and `account.credit_limit` are stored in the account's
+    own currency, so the caller must pass the purchase amount already
+    converted into that same currency - never the primary-currency amount,
+    which would silently mix units whenever the card's currency differs from
+    the user's primary one.
     """
     if account.type != "credit_card":
         return None
@@ -59,10 +65,11 @@ def _credit_card_impact(
             available_before=None,
             available_after=None,
             exceeds_credit_limit=False,
+            currency=account.currency,
         )
 
     current = Decimal(str(account.balance))
-    spend = amount_primary if type == "debit" else -amount_primary
+    spend = amount_account_currency if type == "debit" else -amount_account_currency
     before = compute_available_credit(Decimal(str(limit)), current)
     after = compute_available_credit(Decimal(str(limit)), current - spend)
 
@@ -71,6 +78,7 @@ def _credit_card_impact(
         available_before=round(float(before), 2),
         available_after=round(float(after), 2),
         exceeds_credit_limit=after < 0,
+        currency=account.currency,
     )
 
 
@@ -148,9 +156,25 @@ async def simulate_transaction(
         budget_month=bucket_date.replace(day=1), primary=primary,
     )
 
-    credit_card = _credit_card_impact(
-        account, tx_date=tx_date, type=type, amount_primary=amount_primary
-    )
+    credit_card = None
+    if account.type == "credit_card":
+        if currency == account.currency:
+            amount_account_currency = Decimal(str(amount))
+        else:
+            # allow_fetch=False for the same reason as the primary-currency
+            # conversion above: this is a read-only preview path that must
+            # never write a rate or hit the network.
+            converted_account, _ = await convert(
+                session, Decimal(str(amount)), currency, account.currency, allow_fetch=False
+            )
+            amount_account_currency = converted_account
+
+        credit_card = _credit_card_impact(
+            account,
+            tx_date=tx_date,
+            type=type,
+            amount_account_currency=amount_account_currency,
+        )
 
     return TransactionImpact(
         balance=BalanceImpact(

@@ -28,6 +28,7 @@ class CreditCardImpact(BaseModel):
     available_before: Optional[float] = None
     available_after: Optional[float] = None
     exceeds_credit_limit: bool = False
+    currency: str
 
 
 class TransactionImpact(BaseModel):

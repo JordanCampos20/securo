@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { AlertCircle, Check, ChevronDown, ChevronRight, Loader2, Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
+import { useDisplayLocale } from '@/hooks/use-display-locale'
 import { formatCurrency } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
@@ -50,6 +51,7 @@ type CreditCardImpact = {
   available_before: number | null
   available_after: number | null
   exceeds_credit_limit: boolean
+  currency: string
 }
 
 type Impact = {
@@ -214,9 +216,10 @@ export function ProposalCard({ toolCallId, data }: Props) {
 
 function ImpactLines({ impact }: { impact?: Impact | null }) {
   const { t } = useTranslation()
+  const locale = useDisplayLocale()
   if (!impact) return null
 
-  const money = (v: number, currency: string) => formatCurrency(v, currency)
+  const money = (v: number, currency: string) => formatCurrency(v, currency, locale)
 
   return (
     <div className="mt-1.5 space-y-0.5 text-[13px] leading-snug">
@@ -261,8 +264,8 @@ function ImpactLines({ impact }: { impact?: Impact | null }) {
               })
             : t('agents.proposal.impact.bill', {
                 date: impact.credit_card.bill_due_date,
-                before: money(impact.credit_card.available_before, impact.balance.currency),
-                after: money(impact.credit_card.available_after ?? 0, impact.balance.currency),
+                before: money(impact.credit_card.available_before, impact.credit_card.currency),
+                after: money(impact.credit_card.available_after ?? 0, impact.credit_card.currency),
               })}
           {impact.credit_card.exceeds_credit_limit && (
             <span className="ml-1.5 text-amber-700 dark:text-amber-400">

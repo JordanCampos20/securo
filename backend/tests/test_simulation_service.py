@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account
 from app.models.budget import Budget
+from app.models.fx_rate import FxRate
 from app.models.transaction import Transaction
 from app.schemas.transaction import TransactionCreate
 from app.services import transaction_service
@@ -352,6 +353,63 @@ async def test_non_card_account_has_no_credit_card_block(
     )
 
     assert impact.credit_card is None
+
+
+@pytest.mark.asyncio
+async def test_card_currency_differs_from_primary_stays_in_its_own_currency(
+    session: AsyncSession, test_user, test_workspace
+):
+    """`account.balance` and `account.credit_limit` are stored in the card's
+    own currency, never the user's primary one - regression guard for a bug
+    where the credit-card math used the primary-currency-converted amount,
+    silently mixing units whenever the two currencies differ.
+
+    A non-1:1 USD->BRL rate is seeded so the two code paths diverge sharply:
+    the correct path spends 150 USD against a USD balance/limit (available
+    after = 2350); the buggy path would instead spend the BRL-converted
+    750 as if it were 750 USD (available after = 1750). Either bug (wrong
+    amount or wrong currency label) fails one of the assertions below.
+    """
+    session.add(
+        FxRate(
+            base_currency="USD",
+            quote_currency="BRL",
+            date=date.today(),
+            rate=Decimal("5.0"),
+            source="test",
+        )
+    )
+
+    card = Account(
+        id=uuid.uuid4(),
+        user_id=test_user.id,
+        workspace_id=test_workspace.id,
+        name="Cartao USD",
+        type="credit_card",
+        balance=Decimal("-500.00"),
+        currency="USD",
+        credit_limit=Decimal("3000.00"),
+        statement_close_day=20,
+        payment_due_day=1,
+    )
+    session.add(card)
+    await session.commit()
+
+    impact = await simulate_transaction(
+        session, test_workspace.id, test_user.id,
+        amount=Decimal("150"), currency="USD", type="debit",
+        tx_date=date.today().replace(day=5), account=card,
+    )
+
+    assert impact.credit_card is not None
+    assert impact.credit_card.currency == "USD"
+    # 3000 USD limit with 500 USD owed leaves 2500; the purchase takes it to
+    # 2350 - in USD, not the ~1750 a BRL-converted (750) spend would produce.
+    assert impact.credit_card.available_before == pytest.approx(2500.0)
+    assert impact.credit_card.available_after == pytest.approx(2350.0)
+    assert impact.credit_card.exceeds_credit_limit is False
+    # The balance block still reports in the user's primary currency.
+    assert impact.balance.currency == "BRL"
 
 
 @pytest.mark.asyncio
