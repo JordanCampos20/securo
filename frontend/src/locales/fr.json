@@ -2171,6 +2171,7 @@
         "monthEnd": "Fin de mois {{before}} → {{after}}",
         "bill": "Facture due le {{date}} · limite {{before}} → {{after}}",
         "billNoLimit": "Facture due le {{date}}",
+        "limitOnly": "Limite {{before}} → {{after}}",
         "overLimit": "au-dessus de la limite de la carte"
       }
     },

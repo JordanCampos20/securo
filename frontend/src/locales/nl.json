@@ -2172,6 +2172,7 @@
         "monthEnd": "Einde maand {{before}} → {{after}}",
         "bill": "Afschrift verschuldigd op {{date}} · limiet {{before}} → {{after}}",
         "billNoLimit": "Afschrift verschuldigd op {{date}}",
+        "limitOnly": "Limiet {{before}} → {{after}}",
         "overLimit": "boven de kredietlimiet"
       }
     },

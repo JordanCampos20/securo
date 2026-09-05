@@ -2257,6 +2257,7 @@
         "monthEnd": "Koniec miesiąca {{before}} → {{after}}",
         "bill": "Rachunek z terminem {{date}} · limit {{before}} → {{after}}",
         "billNoLimit": "Rachunek z terminem {{date}}",
+        "limitOnly": "Limit {{before}} → {{after}}",
         "overLimit": "powyżej limitu karty"
       }
     },

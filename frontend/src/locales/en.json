@@ -2170,6 +2170,7 @@
         "monthEnd": "Month end {{before}} → {{after}}",
         "bill": "Bill due {{date}} · limit {{before}} → {{after}}",
         "billNoLimit": "Bill due {{date}}",
+        "limitOnly": "Limit {{before}} → {{after}}",
         "overLimit": "over the card limit"
       }
     },

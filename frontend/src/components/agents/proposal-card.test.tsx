@@ -13,6 +13,9 @@ import { ProposalCard } from './proposal-card'
 // makes a regression to the default visible in the rendered text below.
 vi.mock('@/hooks/use-display-locale', () => ({
   useDisplayLocale: () => 'pt-BR',
+  // Dates follow their own locale hook (`useDateLocale`), pinned here for the
+  // same reason: a raw ISO "2026-10-10" in the bill line must fail loudly.
+  useDateLocale: () => 'pt-BR',
 }))
 
 const baseData = {
@@ -61,6 +64,10 @@ const fullImpact = {
   },
 }
 
+// `toHaveTextContent` normalizes the non-breaking space Intl.NumberFormat
+// inserts after "US$" in the rendered DOM, but not in the expected string.
+const plainNbsp = (s: string) => s.replace(/ /g, ' ')
+
 describe('ProposalCard impact', () => {
   it('renders all three lines when every block is present', () => {
     renderWithProviders(<ProposalCard toolCallId="t1" data={{ ...baseData, impact: fullImpact }} />)
@@ -91,6 +98,56 @@ describe('ProposalCard impact', () => {
     const bill = screen.getByTestId('impact-bill')
     expect(bill).toHaveTextContent(plain(formatCurrency(2300, 'USD', 'pt-BR')))
     expect(bill).toHaveTextContent(plain(formatCurrency(2150, 'USD', 'pt-BR')))
+
+    // The bill date is localized too — it used to be interpolated raw, so an
+    // otherwise pt-BR line carried a bare ISO "2026-10-10".
+    expect(bill).toHaveTextContent('10/10/2026')
+    expect(bill.textContent).not.toContain('2026-10-10')
+  })
+
+  it('drops the bill date but keeps the limit when the card has no cycle days', () => {
+    renderWithProviders(
+      <ProposalCard
+        toolCallId="t6"
+        data={{
+          ...baseData,
+          impact: {
+            ...fullImpact,
+            credit_card: { ...fullImpact.credit_card, bill_due_date: null },
+          },
+        }}
+      />,
+    )
+
+    const bill = screen.getByTestId('impact-bill')
+    expect(bill).toHaveTextContent(plainNbsp(formatCurrency(2300, 'USD', 'pt-BR')))
+    expect(bill).toHaveTextContent(plainNbsp(formatCurrency(2150, 'USD', 'pt-BR')))
+    // No invented date, and no leftover "due" phrasing pointing at nothing.
+    expect(bill.textContent).not.toContain('2026')
+    expect(bill.textContent).not.toContain('null')
+  })
+
+  it('hides the bill line entirely when there is neither a date nor a limit', () => {
+    renderWithProviders(
+      <ProposalCard
+        toolCallId="t7"
+        data={{
+          ...baseData,
+          impact: {
+            ...fullImpact,
+            credit_card: {
+              ...fullImpact.credit_card,
+              bill_due_date: null,
+              available_before: null,
+              available_after: null,
+            },
+          },
+        }}
+      />,
+    )
+
+    expect(screen.queryByTestId('impact-bill')).not.toBeInTheDocument()
+    expect(screen.getByTestId('impact-month-end')).toBeInTheDocument()
   })
 
   it('hides the budget line when there is no budget', () => {

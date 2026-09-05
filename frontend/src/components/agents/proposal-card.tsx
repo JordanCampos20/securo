@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { AlertCircle, Check, ChevronDown, ChevronRight, Loader2, Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import { useDisplayLocale } from '@/hooks/use-display-locale'
+import { useDateLocale, useDisplayLocale } from '@/hooks/use-display-locale'
 import { formatCurrency } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
@@ -47,7 +47,9 @@ type BalanceImpact = {
 }
 
 type CreditCardImpact = {
-  bill_due_date: string
+  // null when the card has no statement close / payment due day configured —
+  // there is no bill date to report and none may be invented.
+  bill_due_date: string | null
   available_before: number | null
   available_after: number | null
   exceeds_credit_limit: boolean
@@ -217,9 +219,19 @@ export function ProposalCard({ toolCallId, data }: Props) {
 function ImpactLines({ impact }: { impact?: Impact | null }) {
   const { t } = useTranslation()
   const locale = useDisplayLocale()
+  const dateLocale = useDateLocale()
   if (!impact) return null
 
   const money = (v: number, currency: string) => formatCurrency(v, currency, locale)
+  // The backend sends a plain ISO date; interpolating it raw left "2026-10-10"
+  // sitting inside an otherwise localized line. Anchored at midnight local
+  // time so the day never shifts backwards across the UTC boundary.
+  const day = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateString(dateLocale)
+
+  const card = impact.credit_card
+  // Nothing left to say once both halves are missing: no bill date to land on
+  // and no limit to measure against.
+  const showCard = card && (card.bill_due_date !== null || card.available_before !== null)
 
   return (
     <div className="mt-1.5 space-y-0.5 text-[13px] leading-snug">
@@ -256,18 +268,23 @@ function ImpactLines({ impact }: { impact?: Impact | null }) {
           after: money(impact.balance.month_end_after, impact.balance.currency),
         })}
       </div>
-      {impact.credit_card && (
+      {showCard && card && (
         <div data-testid="impact-bill" className="text-muted-foreground">
-          {impact.credit_card.available_before === null
+          {card.available_before === null
             ? t('agents.proposal.impact.billNoLimit', {
-                date: impact.credit_card.bill_due_date,
+                date: day(card.bill_due_date as string),
               })
-            : t('agents.proposal.impact.bill', {
-                date: impact.credit_card.bill_due_date,
-                before: money(impact.credit_card.available_before, impact.credit_card.currency),
-                after: money(impact.credit_card.available_after ?? 0, impact.credit_card.currency),
-              })}
-          {impact.credit_card.exceeds_credit_limit && (
+            : card.bill_due_date === null
+              ? t('agents.proposal.impact.limitOnly', {
+                  before: money(card.available_before, card.currency),
+                  after: money(card.available_after ?? 0, card.currency),
+                })
+              : t('agents.proposal.impact.bill', {
+                  date: day(card.bill_due_date),
+                  before: money(card.available_before, card.currency),
+                  after: money(card.available_after ?? 0, card.currency),
+                })}
+          {card.exceeds_credit_limit && (
             <span className="ml-1.5 text-amber-700 dark:text-amber-400">
               {t('agents.proposal.impact.overLimit')}
             </span>

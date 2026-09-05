@@ -2171,6 +2171,7 @@
         "monthEnd": "Monatsende {{before}} → {{after}}",
         "bill": "Abrechnung fällig am {{date}} · Limit {{before}} → {{after}}",
         "billNoLimit": "Abrechnung fällig am {{date}}",
+        "limitOnly": "Limit {{before}} → {{after}}",
         "overLimit": "über dem Kreditlimit"
       }
     },

@@ -2179,6 +2179,7 @@
         "monthEnd": "Кінець місяця {{before}} → {{after}}",
         "bill": "Рахунок до оплати {{date}} · ліміт {{before}} → {{after}}",
         "billNoLimit": "Рахунок до оплати {{date}}",
+        "limitOnly": "Ліміт {{before}} → {{after}}",
         "overLimit": "понад ліміт картки"
       }
     },

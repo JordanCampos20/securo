@@ -2156,6 +2156,7 @@
         "monthEnd": "Fine mese {{before}} → {{after}}",
         "bill": "Estratto conto in scadenza il {{date}} · limite {{before}} → {{after}}",
         "billNoLimit": "Estratto conto in scadenza il {{date}}",
+        "limitOnly": "Limite {{before}} → {{after}}",
         "overLimit": "oltre il limite della carta"
       }
     },

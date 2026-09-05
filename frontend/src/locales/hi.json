@@ -2170,6 +2170,7 @@
         "monthEnd": "माह के अंत में {{before}} → {{after}}",
         "bill": "{{date}} को देय बिल · सीमा {{before}} → {{after}}",
         "billNoLimit": "{{date}} को देय बिल",
+        "limitOnly": "सीमा {{before}} → {{after}}",
         "overLimit": "कार्ड की सीमा से अधिक"
       }
     },

@@ -2156,6 +2156,7 @@
         "monthEnd": "Fin de mes {{before}} → {{after}}",
         "bill": "Factura vence {{date}} · límite {{before}} → {{after}}",
         "billNoLimit": "Factura vence {{date}}",
+        "limitOnly": "Límite {{before}} → {{after}}",
         "overLimit": "por encima del límite de la tarjeta"
       }
     },

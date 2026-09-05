@@ -2170,6 +2170,7 @@
         "monthEnd": "月末 {{before}} → {{after}}",
         "bill": "支払期日{{date}}の請求 · 利用枠{{before}} → {{after}}",
         "billNoLimit": "支払期日{{date}}の請求",
+        "limitOnly": "利用枠 {{before}} → {{after}}",
         "overLimit": "利用枠を超過"
       }
     },

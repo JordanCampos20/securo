@@ -2156,6 +2156,7 @@
         "monthEnd": "Fim do mês {{before}} → {{after}}",
         "bill": "Fatura em {{date}} · limite {{before}} → {{after}}",
         "billNoLimit": "Fatura em {{date}}",
+        "limitOnly": "Limite {{before}} → {{after}}",
         "overLimit": "acima do limite do cartão"
       }
     },

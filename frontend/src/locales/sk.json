@@ -2306,6 +2306,7 @@
         "monthEnd": "Koniec mesiaca {{before}} → {{after}}",
         "bill": "Výpis so splatnosťou {{date}} · limit {{before}} → {{after}}",
         "billNoLimit": "Výpis so splatnosťou {{date}}",
+        "limitOnly": "Limit {{before}} → {{after}}",
         "overLimit": "nad limitom karty"
       }
     },
