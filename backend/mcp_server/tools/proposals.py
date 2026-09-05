@@ -73,6 +73,10 @@ _PROPOSAL_PREFACE = (
     "Describe results as 'I prepared a proposal…' / 'Here's a preview…' — "
     "NEVER as 'I created' / 'Done' / 'Ready' unless the response includes "
     "applied=true.] "
+    "When the response carries an `impact` block, mention it in ONE short "
+    "sentence, leading with whatever broke (over budget, negative month end, "
+    "over the card limit) or simply what is left. The card already shows the "
+    "numbers - do NOT restate them in prose."
 )
 
 # Apply flag, attached to every propose_* tool's parameters. Default false.
@@ -555,9 +559,26 @@ async def propose_create_transaction(
             "share_type": splits["share_type"],
             "items": splits_preview,
         }
+    from app.services.simulation_service import simulate_transaction
+
+    # Read-only, computed before any write path is considered. Every
+    # proposal gets it: three reads inside a turn already waiting on the LLM.
+    impact = await simulate_transaction(
+        session,
+        ws_id,
+        ctx.user_id,
+        amount=Decimal(str(amount)),
+        currency=proposed["currency"],
+        type=type,
+        tx_date=target_date,
+        account=acc,
+        category=cat,
+    )
+
     preview = {
         "kind": "create_transaction",
         "proposed": proposed,
+        "impact": impact.model_dump(mode="json"),
         "apply_endpoint": "POST /api/transactions",
     }
 

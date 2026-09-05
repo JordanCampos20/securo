@@ -456,6 +456,26 @@ async def test_propose_create_transaction_full(
     assert p["date"]  # default to today
 
 
+async def test_propose_create_transaction_includes_impact(
+    session: AsyncSession, ctx: CallContext, test_account, test_categories
+):
+    """The preview carries the impact block so the card can render numbers."""
+    handler = REGISTRY["propose_create_transaction"].handler
+    r = await handler(
+        session=session, ctx=ctx,
+        description="Pizza",
+        amount=150.0,
+        type="debit",
+        account_id=str(test_account.id),
+        category_id=str(test_categories[0].id),
+    )
+
+    assert r["kind"] == "create_transaction"
+    assert "impact" in r
+    assert "balance" in r["impact"]
+    assert "today_after" in r["impact"]["balance"]
+
+
 async def test_propose_create_transaction_unknown_account(
     session: AsyncSession, ctx: CallContext
 ):
