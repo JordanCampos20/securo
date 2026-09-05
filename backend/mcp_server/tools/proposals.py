@@ -562,10 +562,22 @@ async def propose_create_transaction(
             "share_type": splits["share_type"],
             "items": splits_preview,
         }
+    # Capture the ids the write path needs *before* the simulation runs. A
+    # failed simulation rolls the session back (see below), and a rollback
+    # expires every ORM instance loaded in that transaction — touching
+    # `acc.id` or `cat.id` afterwards would fire an implicit lazy reload,
+    # which raises MissingGreenlet under asyncio. Plain UUIDs survive intact.
+    acc_id = acc.id
+    cat_id = cat.id if cat else None
+
     from app.services.simulation_service import simulate_transaction
 
-    # Read-only, computed before any write path is considered. Every
-    # proposal gets it: three reads inside a turn already waiting on the LLM.
+    # Read-only, computed before any write path is considered. Every proposal
+    # gets it, inside a turn already waiting on the LLM. It is not three cheap
+    # reads: whenever a category is present, `get_budget_vs_actual` builds the
+    # whole workspace budget report for the current *and* previous month,
+    # per-row FX included. Short-circuiting it to categories that actually
+    # carry a budget is a known follow-up.
     # Never let a simulation failure sink an otherwise-valid proposal — the
     # user already has a correct description/amount/account/category; the
     # impact is a nice-to-have on top of that, not a precondition.
@@ -585,6 +597,14 @@ async def propose_create_transaction(
         impact_dict = impact.model_dump(mode="json")
     except Exception:  # noqa: BLE001
         logger.exception("simulate_transaction failed; returning proposal without impact")
+        # A failure mid-simulation can leave the session needing a rollback
+        # (any DB error puts asyncpg/SQLAlchemy into a state where the next
+        # statement raises PendingRollbackError). The `apply=true` branch below
+        # writes on this *same* session, so swallowing the error without
+        # rolling back would turn a cosmetic impact failure into a failed
+        # write. Safe to do unconditionally: the simulation is read-only by
+        # design, so there is never anything of ours to lose here.
+        await session.rollback()
 
     preview = {
         "kind": "create_transaction",
@@ -624,8 +644,8 @@ async def propose_create_transaction(
                     amount=Decimal(str(amount)),
                     date=target_date,
                     type=type,
-                    account_id=acc.id,
-                    category_id=cat.id if cat else None,
+                    account_id=acc_id,
+                    category_id=cat_id,
                     currency=proposed["currency"],
                     notes=notes,
                     splits=splits_payload,
