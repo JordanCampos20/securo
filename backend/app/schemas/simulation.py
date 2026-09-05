@@ -24,7 +24,10 @@ class BalanceImpact(BaseModel):
 
 
 class CreditCardImpact(BaseModel):
-    bill_due_date: _Date
+    # None when the card has no statement_close_day / payment_due_day set.
+    # Both columns are nullable and a hand-added card commonly has neither;
+    # inventing a due date would tell the user the bill is due the day they buy.
+    bill_due_date: Optional[_Date] = None
     available_before: Optional[float] = None
     available_after: Optional[float] = None
     exceeds_credit_limit: bool = False

@@ -25,12 +25,56 @@ from app.schemas.simulation import (
 )
 
 
+class MissingRateError(RuntimeError):
+    """No stored FX rate could be resolved for a conversion the impact needs.
+
+    The simulation converts with ``allow_fetch=False`` (read-only path), so a
+    cache miss cannot be repaired by calling the provider. `get_rate` would
+    hand back a 1:1 fallback here, which on this screen means showing the user
+    a confidently wrong number - a USD purchase counted as if 1 USD were 1 BRL
+    is a ~5x error on the exact figure they are deciding against. Raising
+    instead lets `propose_create_transaction` degrade to `impact: None`: the
+    proposal survives, and the user sees no impact lines rather than false ones.
+    """
+
+
+async def _convert_or_raise(
+    session: AsyncSession,
+    amount: Decimal,
+    from_currency: str,
+    to_currency: str,
+) -> Decimal:
+    """Convert using stored rates only, or raise :class:`MissingRateError`.
+
+    Deliberately calls `_resolve_rate` rather than `convert`/`get_rate`: those
+    swallow a cache miss into a 1:1 fallback, which is right for a dashboard
+    that must still render something and wrong for a number the user is about
+    to make a purchase decision on.
+
+    `allow_fetch=False` is the read-only guarantee - a fetch would `sync_rates()`,
+    which does a DB upsert + commit and an outbound HTTP call.
+    """
+    if from_currency == to_currency:
+        return Decimal(str(amount))
+
+    from app.services.fx_rate_service import _resolve_rate
+
+    rate = await _resolve_rate(session, from_currency, to_currency, allow_fetch=False)
+    if rate is None:
+        raise MissingRateError(
+            f"no stored FX rate for {from_currency} -> {to_currency}; "
+            "refusing to report a 1:1 impact"
+        )
+    return (Decimal(str(amount)) * rate).quantize(Decimal("0.01"))
+
+
 def _credit_card_impact(
     account: Account,
     *,
     tx_date: date,
     type: str,
     amount_account_currency: Decimal,
+    current_balance: Decimal,
 ) -> Optional[CreditCardImpact]:
     """Which bill the purchase lands on, and what it does to the limit.
 
@@ -38,11 +82,19 @@ def _credit_card_impact(
     with no limit configured still reports its bill date; there is simply
     nothing to measure the available credit against.
 
-    `account.balance` and `account.credit_limit` are stored in the account's
+    `current_balance` and `account.credit_limit` are stored in the account's
     own currency, so the caller must pass the purchase amount already
     converted into that same currency - never the primary-currency amount,
     which would silently mix units whenever the card's currency differs from
     the user's primary one.
+
+    `current_balance` must be the *resolved* balance, the way the rest of the
+    app derives it - never the raw `account.balance` column. That column is
+    written once at account creation for manual accounts and never updated by
+    the transaction path, and for connected accounts the provider stores card
+    debt as a *positive* number that every other consumer negates. Reading it
+    directly reported the opening balance for manual cards and a permanent
+    "full limit available, nothing to worry about" for connected ones.
     """
     if account.type != "credit_card":
         return None
@@ -52,10 +104,16 @@ def _credit_card_impact(
         compute_effective_date,
     )
 
-    bill_due_date = compute_effective_date(
-        tx_date,
-        getattr(account, "statement_close_day", None),
-        getattr(account, "payment_due_day", None),
+    # Both cycle days are nullable and a hand-added card commonly has neither.
+    # `compute_effective_date` returns `tx_date` unchanged in that case, which
+    # would render as "Bill due <today>" - a date we invented. Report no bill
+    # date instead and let the card drop the line.
+    close_day = getattr(account, "statement_close_day", None)
+    due_day = getattr(account, "payment_due_day", None)
+    bill_due_date = (
+        compute_effective_date(tx_date, close_day, due_day)
+        if close_day and due_day
+        else None
     )
 
     limit = getattr(account, "credit_limit", None)
@@ -68,7 +126,7 @@ def _credit_card_impact(
             currency=account.currency,
         )
 
-    current = Decimal(str(account.balance))
+    current = Decimal(str(current_balance))
     spend = amount_account_currency if type == "debit" else -amount_account_currency
     before = compute_available_credit(Decimal(str(limit)), current)
     after = compute_available_credit(Decimal(str(limit)), current - spend)
@@ -94,26 +152,26 @@ async def simulate_transaction(
     account: Account,
     category: Optional[Category] = None,
 ) -> TransactionImpact:
-    from app.services.dashboard_service import _balance_at
-    from app.services.fx_rate_service import convert
+    from app.services.dashboard_service import (
+        _balance_at,
+        _total_balance_by_currency,
+    )
     from app.services.transaction_calendar_service import get_transaction_calendar
+
+    # The `type` enum is declared in the MCP JSON schema, but nothing validates
+    # arguments against that schema before dispatch (`registry.py` splats
+    # `**arguments` straight into the handler). Without this guard a model
+    # emitting `type="expense"` falls into the `credit` branch and the card
+    # cheerfully shows the balance *rising* by R$150 for a pizza.
+    if type not in ("debit", "credit"):
+        raise ValueError(f"unsupported transaction type: {type!r}")
 
     user = await session.get(User, user_id)
     primary = user.primary_currency if user else get_settings().default_currency
 
-    if currency == primary:
-        amount_primary = Decimal(str(amount))
-    else:
-        # allow_fetch=False: this service must never write or hit the
-        # network. A cache miss would otherwise fall through to
-        # sync_rates(), which does a DB upsert + commit and an outbound
-        # HTTP call to the FX provider - forbidden on a read-only preview
-        # path. We rely on whatever rate is already stored (or the 1:1
-        # fallback inside get_rate) instead.
-        converted, _ = await convert(
-            session, Decimal(str(amount)), currency, primary, allow_fetch=False
-        )
-        amount_primary = converted
+    # Read-only conversion: raises rather than falling back to 1:1. See
+    # `_convert_or_raise`.
+    amount_primary = await _convert_or_raise(session, amount, currency, primary)
 
     # Debit takes money out, credit puts it in. The sign is the whole trick.
     delta = float(-amount_primary if type == "debit" else amount_primary)
@@ -158,22 +216,28 @@ async def simulate_transaction(
 
     credit_card = None
     if account.type == "credit_card":
-        if currency == account.currency:
-            amount_account_currency = Decimal(str(amount))
-        else:
-            # allow_fetch=False for the same reason as the primary-currency
-            # conversion above: this is a read-only preview path that must
-            # never write a rate or hit the network.
-            converted_account, _ = await convert(
-                session, Decimal(str(amount)), currency, account.currency, allow_fetch=False
+        amount_account_currency = await _convert_or_raise(
+            session, amount, currency, account.currency
+        )
+
+        # Resolve the card's real debt the way the rest of the app does, in the
+        # card's own currency. `_total_balance_by_currency` sums the signed
+        # transactions for a manual account and negates the provider's positive
+        # debt for a connected one - both of which `account.balance` gets wrong.
+        # Only worth the query when there is a limit to measure against.
+        current_balance = Decimal("0")
+        if getattr(account, "credit_limit", None) is not None:
+            totals = await _total_balance_by_currency(
+                session, workspace_id, today, [account.id], include_pending=True
             )
-            amount_account_currency = converted_account
+            current_balance = Decimal(str(totals.get(account.currency, 0.0)))
 
         credit_card = _credit_card_impact(
             account,
             tx_date=tx_date,
             type=type,
             amount_account_currency=amount_account_currency,
+            current_balance=current_balance,
         )
 
     return TransactionImpact(

@@ -232,20 +232,42 @@ async def test_exceeds_budget_flips_on_the_exact_cent(
 
 @pytest_asyncio.fixture
 async def sim_card(session: AsyncSession, test_user, test_workspace) -> Account:
-    """Credit card closing on the 20th, due on the 1st, R$3000 limit, R$500 owed."""
+    """Credit card closing on the 20th, due on the 1st, R$3000 limit, R$500 owed.
+
+    The R$500 owed comes from a real posted transaction, not from the
+    `balance` column - which is left at 0.00 on purpose. `create_account`
+    writes that column once and the transaction path never updates it, so a
+    manual card's column is its *opening* balance forever. Anything reading it
+    as the current debt reports 3000 available here instead of 2500 and fails.
+    """
     card = Account(
         id=uuid.uuid4(),
         user_id=test_user.id,
         workspace_id=test_workspace.id,
         name="Cartao",
         type="credit_card",
-        balance=Decimal("-500.00"),
+        balance=Decimal("0.00"),
         currency="BRL",
         credit_limit=Decimal("3000.00"),
         statement_close_day=20,
         payment_due_day=1,
     )
     session.add(card)
+    await session.commit()
+    session.add(
+        Transaction(
+            id=uuid.uuid4(),
+            user_id=test_user.id,
+            account_id=card.id,
+            description="Compras anteriores",
+            amount=Decimal("500"),
+            currency="BRL",
+            date=date.today().replace(day=1),
+            type="debit",
+            source="manual",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
     await session.commit()
     await session.refresh(card)
     return card
@@ -355,6 +377,45 @@ async def test_non_card_account_has_no_credit_card_block(
     assert impact.credit_card is None
 
 
+async def _usd_card(session: AsyncSession, test_user, test_workspace) -> Account:
+    """USD card, 3000 USD limit, 500 USD already owed via a real transaction.
+
+    Same reasoning as `sim_card`: the debt lives in the ledger, not in the
+    `balance` column, so the resolved-balance path is what is under test.
+    """
+    card = Account(
+        id=uuid.uuid4(),
+        user_id=test_user.id,
+        workspace_id=test_workspace.id,
+        name="Cartao USD",
+        type="credit_card",
+        balance=Decimal("0.00"),
+        currency="USD",
+        credit_limit=Decimal("3000.00"),
+        statement_close_day=20,
+        payment_due_day=1,
+    )
+    session.add(card)
+    await session.commit()
+    session.add(
+        Transaction(
+            id=uuid.uuid4(),
+            user_id=test_user.id,
+            account_id=card.id,
+            description="Compras anteriores",
+            amount=Decimal("500"),
+            currency="USD",
+            date=date.today().replace(day=1),
+            type="debit",
+            source="manual",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    await session.commit()
+    await session.refresh(card)
+    return card
+
+
 @pytest.mark.asyncio
 async def test_card_currency_differs_from_primary_stays_in_its_own_currency(
     session: AsyncSession, test_user, test_workspace
@@ -380,20 +441,7 @@ async def test_card_currency_differs_from_primary_stays_in_its_own_currency(
         )
     )
 
-    card = Account(
-        id=uuid.uuid4(),
-        user_id=test_user.id,
-        workspace_id=test_workspace.id,
-        name="Cartao USD",
-        type="credit_card",
-        balance=Decimal("-500.00"),
-        currency="USD",
-        credit_limit=Decimal("3000.00"),
-        statement_close_day=20,
-        payment_due_day=1,
-    )
-    session.add(card)
-    await session.commit()
+    card = await _usd_card(session, test_user, test_workspace)
 
     impact = await simulate_transaction(
         session, test_workspace.id, test_user.id,
@@ -484,16 +532,32 @@ async def test_cross_currency_purchase_never_touches_network(
     """A hypothetical purchase in a currency other than primary must resolve
     via stored rates only.
 
-    Regression guard for the read-only constraint: no `fx_rates` row is
-    seeded, forcing a cache miss on USD->BRL, so if the conversion fell
-    through to `sync_rates()` (DB upsert + commit + outbound HTTP call to the
-    FX provider) it would show up here as a call. `simulate_transaction` must
-    still return a usable impact via the 1:1 fallback instead. The account's
-    one posted transaction is stamped `currency="BRL"` explicitly (matching
-    the account and the user's primary currency) so the only currency
-    mismatch in play is the hypothetical purchase's own `currency="USD"` -
-    keeping this test isolated to the one conversion this task controls.
+    Regression guard for the read-only constraint: the USD->BRL rate is seeded
+    straight into `fx_rates`, and `sync_rates()` - a DB upsert + commit plus an
+    outbound HTTP call to the FX provider - is patched to record any call. The
+    conversion has to come entirely from the cache.
+
+    The rate is a real 5.0, and the assertions below are on the *converted*
+    number. This test used to seed nothing and assert the 1:1 fallback
+    (100 USD -> R$100) as correct, pinning a ~5x error as expected behaviour
+    on the one screen where the user decides based on the figure.
+
+    The account's one posted transaction is stamped `currency="BRL"`
+    explicitly (matching the account and the user's primary currency) so the
+    only currency mismatch in play is the hypothetical purchase's own
+    `currency="USD"` - keeping this test isolated to the one conversion this
+    task controls.
     """
+    session.add(
+        FxRate(
+            base_currency="USD",
+            quote_currency="BRL",
+            date=date.today(),
+            rate=Decimal("5.0"),
+            source="test",
+        )
+    )
+
     account = Account(
         id=uuid.uuid4(),
         user_id=test_user.id,
@@ -541,6 +605,249 @@ async def test_cross_currency_purchase_never_touches_network(
     assert calls == []  # never reached the write/network path
     assert impact.balance.currency == "BRL"
     assert impact.balance.today_before == pytest.approx(2000.0)
-    assert impact.balance.today_after == pytest.approx(1900.0)  # 1:1 fallback: 100 USD -> 100 BRL
-    assert impact.balance.month_end_after == pytest.approx(1900.0)
+    # 100 USD at the stored 5.0 rate is R$500, so 2000 -> 1500. Never 1900,
+    # which is what the silent 1:1 fallback produced.
+    assert impact.balance.today_after == pytest.approx(1500.0)
+    assert impact.balance.month_end_after == pytest.approx(1500.0)
     assert impact.balance.ends_month_negative is False
+
+
+@pytest.mark.asyncio
+async def test_missing_rate_refuses_to_report_a_1_to_1_impact(
+    session: AsyncSession, test_user, test_workspace, sim_account, monkeypatch
+):
+    """No cached rate and no fetching allowed -> no number at all.
+
+    `get_rate` answers a cache miss with a 1:1 fallback, which is the right
+    call for a dashboard that must still render something and the wrong call
+    here: a USD purchase counted as if 1 USD were 1 BRL is a ~5x error on the
+    figure the user is deciding against. The service raises instead, and
+    `propose_create_transaction` degrades to `impact: None` - the proposal
+    survives and the card simply shows no impact lines.
+
+    `sync_rates` is still patched to prove the refusal is not a disguised
+    network attempt: the read-only guarantee holds either way.
+    """
+    import app.services.fx_rate_service as fx_rate_service
+    from app.services.simulation_service import MissingRateError
+
+    calls: list[tuple] = []
+
+    async def _tracking_sync_rates(*args, **kwargs):
+        calls.append((args, kwargs))
+        return 0
+
+    monkeypatch.setattr(fx_rate_service, "sync_rates", _tracking_sync_rates)
+
+    with pytest.raises(MissingRateError):
+        await simulate_transaction(
+            session, test_workspace.id, test_user.id,
+            amount=Decimal("100"), currency="USD", type="debit",
+            tx_date=date.today(), account=sim_account,
+        )
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_connected_card_debt_is_positive_and_still_shrinks_availability(
+    session: AsyncSession, test_user, test_workspace
+):
+    """A provider-synced card stores its debt as a *positive* balance.
+
+    Every other consumer negates it (`account_service.py:165`,
+    `dashboard_service.py:1393-1395`). Reading the column raw makes
+    `compute_available_credit` see a positive balance, compute `utilized = 0`,
+    and report the full limit with `exceeds_credit_limit=False` - forever, for
+    every connected card, on the exact number the user asked about.
+    """
+    from app.models.bank_connection import BankConnection
+
+    connection = BankConnection(
+        id=uuid.uuid4(),
+        user_id=test_user.id,
+        workspace_id=test_workspace.id,
+        provider="pluggy",
+        external_id="item-1",
+        institution_name="Banco Teste",
+    )
+    session.add(connection)
+    await session.commit()
+
+    card = Account(
+        id=uuid.uuid4(),
+        user_id=test_user.id,
+        workspace_id=test_workspace.id,
+        connection_id=connection.id,
+        name="Cartao conectado",
+        type="credit_card",
+        balance=Decimal("500.00"),  # provider convention: debt is positive
+        currency="BRL",
+        credit_limit=Decimal("3000.00"),
+        statement_close_day=20,
+        payment_due_day=1,
+    )
+    session.add(card)
+    await session.commit()
+    await session.refresh(card)
+
+    impact = await simulate_transaction(
+        session, test_workspace.id, test_user.id,
+        amount=Decimal("150"), currency="BRL", type="debit",
+        tx_date=date.today().replace(day=5), account=card,
+    )
+
+    assert impact.credit_card is not None
+    # 3000 limit, 500 owed -> 2500 available, and the pizza takes 150 of it.
+    assert impact.credit_card.available_before == pytest.approx(2500.0)
+    assert impact.credit_card.available_after == pytest.approx(2350.0)
+    # Never the untouched full limit, which is what the raw column produced.
+    assert impact.credit_card.available_before != pytest.approx(3000.0)
+    assert impact.credit_card.available_after < impact.credit_card.available_before
+
+
+@pytest.mark.asyncio
+async def test_manual_card_debt_comes_from_transactions_not_the_balance_column(
+    session: AsyncSession, test_user, test_workspace
+):
+    """`Account.balance` is written once at creation and never by the tx path.
+
+    The column here is deliberately stale (0.00, an untouched opening balance)
+    while the ledger carries R$1,200 of purchases. Reading the column reports
+    the full R$3,000 limit as available; reading the ledger reports R$1,800.
+    """
+    card = Account(
+        id=uuid.uuid4(),
+        user_id=test_user.id,
+        workspace_id=test_workspace.id,
+        name="Cartao manual",
+        type="credit_card",
+        balance=Decimal("0.00"),
+        currency="BRL",
+        credit_limit=Decimal("3000.00"),
+        statement_close_day=20,
+        payment_due_day=1,
+    )
+    session.add(card)
+    await session.commit()
+    for amount in (Decimal("900"), Decimal("300")):
+        session.add(
+            Transaction(
+                id=uuid.uuid4(),
+                user_id=test_user.id,
+                account_id=card.id,
+                description="Compra",
+                amount=amount,
+                currency="BRL",
+                date=date.today().replace(day=1),
+                type="debit",
+                source="manual",
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+    await session.commit()
+    await session.refresh(card)
+
+    impact = await simulate_transaction(
+        session, test_workspace.id, test_user.id,
+        amount=Decimal("150"), currency="BRL", type="debit",
+        tx_date=date.today().replace(day=5), account=card,
+    )
+
+    assert impact.credit_card is not None
+    assert impact.credit_card.available_before == pytest.approx(1800.0)
+    assert impact.credit_card.available_after == pytest.approx(1650.0)
+    assert impact.credit_card.available_before != pytest.approx(3000.0)
+
+
+@pytest.mark.asyncio
+async def test_card_without_cycle_days_reports_no_bill_date(
+    session: AsyncSession, test_user, test_workspace
+):
+    """`statement_close_day` / `payment_due_day` are nullable and commonly unset.
+
+    `compute_effective_date` returns `tx_date` unchanged without them, so the
+    card would tell the user the bill is due the very day they buy the pizza.
+    Report no date instead; the limit information still stands.
+    """
+    card = Account(
+        id=uuid.uuid4(),
+        user_id=test_user.id,
+        workspace_id=test_workspace.id,
+        name="Cartao sem ciclo",
+        type="credit_card",
+        balance=Decimal("0.00"),
+        currency="BRL",
+        credit_limit=Decimal("3000.00"),
+        statement_close_day=None,
+        payment_due_day=None,
+    )
+    session.add(card)
+    await session.commit()
+
+    impact = await simulate_transaction(
+        session, test_workspace.id, test_user.id,
+        amount=Decimal("150"), currency="BRL", type="debit",
+        tx_date=date.today(), account=card,
+    )
+
+    assert impact.credit_card is not None
+    assert impact.credit_card.bill_due_date is None
+    # The limit half of the block is unaffected by the missing cycle metadata.
+    assert impact.credit_card.available_before == pytest.approx(3000.0)
+    assert impact.credit_card.available_after == pytest.approx(2850.0)
+
+
+@pytest.mark.asyncio
+async def test_transaction_currency_differs_from_the_card_currency(
+    session: AsyncSession, test_user, test_workspace
+):
+    """A BRL purchase on a USD card must be converted into the card's currency.
+
+    This is the branch that actually mixes units (`simulation_service.py`'s
+    tx-currency != card-currency path); the sibling test above only exercises
+    the short-circuit where the two already match. At USD->BRL 5.0 the R$150
+    pizza is 30 USD, so 2500 available becomes 2470 - not 2350 (the amount
+    used raw as if BRL were USD).
+    """
+    session.add(
+        FxRate(
+            base_currency="USD",
+            quote_currency="BRL",
+            date=date.today(),
+            rate=Decimal("5.0"),
+            source="test",
+        )
+    )
+
+    card = await _usd_card(session, test_user, test_workspace)
+
+    impact = await simulate_transaction(
+        session, test_workspace.id, test_user.id,
+        amount=Decimal("150"), currency="BRL", type="debit",
+        tx_date=date.today().replace(day=5), account=card,
+    )
+
+    assert impact.credit_card is not None
+    assert impact.credit_card.currency == "USD"
+    assert impact.credit_card.available_before == pytest.approx(2500.0)
+    assert impact.credit_card.available_after == pytest.approx(2470.0)
+    assert impact.credit_card.exceeds_credit_limit is False
+
+
+@pytest.mark.asyncio
+async def test_unsupported_transaction_type_is_rejected(
+    session: AsyncSession, test_user, test_workspace, sim_account
+):
+    """The MCP JSON schema declares the enum but nothing enforces it.
+
+    `registry.call_tool` splats `**arguments` straight into the handler, so a
+    model emitting `type="expense"` would otherwise fall into the `credit`
+    branch and show the balance *rising* by R$150 for a pizza.
+    """
+    with pytest.raises(ValueError, match="unsupported transaction type"):
+        await simulate_transaction(
+            session, test_workspace.id, test_user.id,
+            amount=Decimal("150"), currency="BRL", type="expense",
+            tx_date=date.today(), account=sim_account,
+        )
