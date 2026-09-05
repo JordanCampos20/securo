@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.account import Account
 from app.models.budget import Budget
 from app.models.transaction import Transaction
+from app.schemas.transaction import TransactionCreate
+from app.services import transaction_service
 from app.services.simulation_service import simulate_transaction
 
 
@@ -350,3 +352,68 @@ async def test_non_card_account_has_no_credit_card_block(
     )
 
     assert impact.credit_card is None
+
+
+@pytest.mark.asyncio
+async def test_simulation_matches_reality_after_booking(
+    session: AsyncSession, test_user, test_workspace, sim_account
+):
+    """Simulate, then really create the transaction. The numbers must agree.
+
+    If someone changes the projection engine later, this is the test that
+    should break - not the user, at the end of the month.
+    """
+    from app.services.dashboard_service import _balance_at
+    from app.services.transaction_calendar_service import get_transaction_calendar
+
+    predicted = await simulate_transaction(
+        session, test_workspace.id, test_user.id,
+        amount=Decimal("150"), currency="BRL", type="debit",
+        tx_date=date.today(), account=sim_account,
+    )
+
+    await transaction_service.create_transaction(
+        session,
+        test_workspace.id,
+        test_user.id,
+        TransactionCreate(
+            description="Pizza",
+            amount=Decimal("150"),
+            date=date.today(),
+            type="debit",
+            account_id=sim_account.id,
+            currency="BRL",
+        ),
+    )
+
+    actual_today = await _balance_at(
+        session, test_workspace.id, date.today(),
+        primary_currency_hint="BRL", include_pending=True,
+    )
+    calendar = await get_transaction_calendar(
+        session, test_workspace.id, test_user.id, month=date.today().replace(day=1)
+    )
+    actual_month_end = [d for d in calendar.days if d.in_month][-1].ending_balance
+
+    assert actual_today == pytest.approx(predicted.balance.today_after, abs=0.01)
+    assert actual_month_end == pytest.approx(predicted.balance.month_end_after, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_simulating_never_writes(
+    session: AsyncSession, test_user, test_workspace, test_categories, sim_account, food_budget
+):
+    from sqlalchemy import func, select
+
+    async def _count() -> int:
+        return await session.scalar(select(func.count()).select_from(Transaction))
+
+    before = await _count()
+
+    await simulate_transaction(
+        session, test_workspace.id, test_user.id,
+        amount=Decimal("150"), currency="BRL", type="debit",
+        tx_date=date.today(), account=sim_account, category=test_categories[0],
+    )
+
+    assert await _count() == before
