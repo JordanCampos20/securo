@@ -17,7 +17,7 @@ from app.core.config import get_settings
 from app.models.account import Account
 from app.models.category import Category
 from app.models.user import User
-from app.schemas.simulation import BalanceImpact, TransactionImpact
+from app.schemas.simulation import BalanceImpact, BudgetImpact, TransactionImpact
 
 
 async def simulate_transaction(
@@ -64,6 +64,28 @@ async def simulate_transaction(
     month_end_before = in_month[-1].ending_balance if in_month else today_before
     month_end_after = month_end_before + delta
 
+    from app.services.admin_service import get_credit_card_accounting_mode
+
+    # Mirror reporting_date_col(): 'accrual' buckets by the bill date,
+    # 'cash' (the default) by the purchase date. Naming is inverted from
+    # the accounting jargon - see _query_filters.py:89-92.
+    accounting_mode = await get_credit_card_accounting_mode(session)
+    bucket_date = tx_date
+    if accounting_mode == "accrual" and account.type == "credit_card":
+        from app.services.credit_card_service import compute_effective_date
+
+        bucket_date = compute_effective_date(
+            tx_date,
+            getattr(account, "statement_close_day", None),
+            getattr(account, "payment_due_day", None),
+        )
+
+    budget = await _budget_impact(
+        session, workspace_id, user_id,
+        category=category, type=type, amount_primary=amount_primary,
+        budget_month=bucket_date.replace(day=1), primary=primary,
+    )
+
     return TransactionImpact(
         balance=BalanceImpact(
             today_before=round(today_before, 2),
@@ -73,6 +95,47 @@ async def simulate_transaction(
             ends_month_negative=month_end_after < 0,
             currency=primary,
         ),
-        budget=None,
+        budget=budget,
         credit_card=None,
+    )
+
+
+async def _budget_impact(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    user_id: uuid.UUID,
+    *,
+    category: Optional[Category],
+    type: str,
+    amount_primary: Decimal,
+    budget_month: date,
+    primary: str,
+) -> Optional[BudgetImpact]:
+    """The category's budget before and after the hypothetical spend.
+
+    Returns None whenever there is no yardstick to measure against: no
+    category, no budget on it, or an income row (budgets track expenses).
+    """
+    if category is None or type != "debit":
+        return None
+
+    from app.services.budget_service import get_budget_vs_actual
+
+    rows = await get_budget_vs_actual(session, workspace_id, user_id, month=budget_month)
+    row = next((r for r in rows if r.category_id == category.id), None)
+    if row is None or row.budget_amount is None:
+        return None
+
+    limit = float(row.budget_amount)
+    spent_before = float(row.actual_amount)
+    spent_after = spent_before + float(amount_primary)
+
+    return BudgetImpact(
+        category_name=row.category_name,
+        limit=round(limit, 2),
+        spent_before=round(spent_before, 2),
+        spent_after=round(spent_after, 2),
+        remaining_after=round(limit - spent_after, 2),
+        exceeds_budget=spent_after > limit,
+        currency=primary,
     )
