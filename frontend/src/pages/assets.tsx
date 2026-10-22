@@ -1150,7 +1150,7 @@ export default function AssetsPage() {
           <DialogHeader>
             <DialogTitle>{editingAsset ? t('assets.editAsset') : t('assets.addAsset')}</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
+          <div className="space-y-4 min-w-0">
             {/* Name */}
             <div className="space-y-2">
               <Label>{t('assets.name')}</Label>
