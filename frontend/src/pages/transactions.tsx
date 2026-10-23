@@ -13,6 +13,17 @@ import { invalidateFinancialQueries } from '@/lib/invalidate-queries'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuPortal,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu'
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -36,7 +47,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Skeleton } from '@/components/ui/skeleton'
-import { AlertTriangle, ArrowLeftRight, ArrowUp, ArrowDown, Check, Clock, HelpCircle, Info, Paperclip, Trash2, Users, X, EyeClosed, ChartNoAxesColumn, SlidersHorizontal, Receipt } from 'lucide-react'
+import { AlertTriangle, ArrowLeftRight, ArrowUp, ArrowDown, Check, Clock, HelpCircle, Info, Paperclip, TagIcon, Trash2, Users, X, EyeClosed, ChartNoAxesColumn, SlidersHorizontal, Receipt } from 'lucide-react'
 import type { Transaction, Rule, InstallmentSeriesInput, TransactionApplyScope, TransactionEditPayload, ReconciliationSuggestion } from '@/types'
 import { RuleDialog, type RuleDialogInitialData } from '@/components/rule-dialog'
 import { PageHeader } from '@/components/page-header'
@@ -44,6 +55,7 @@ import { calculateRangeSelection } from '@/lib/selection-utils'
 import { isManualInstallmentSeriesRow } from '@/lib/installment-series'
 import { CategoryIcon } from '@/components/category-icon'
 import { CategorySelect } from '@/components/category-select'
+import { CategoryPicker } from '@/components/category-picker'
 import { TransactionDialog, type SaveAction, type TransactionSavePayload } from '@/components/transaction-dialog'
 import { extractApiError } from '@/lib/api-errors'
 import { refreshTransactionsView } from '@/lib/transactions-refresh'
@@ -219,6 +231,9 @@ export default function TransactionsPage() {
   const [bulkTagInput, setBulkTagInput] = useState<string>('')
   const [createRuleOpen, setCreateRuleOpen] = useState(false)
   const [createRuleInitialData, setCreateRuleInitialData] = useState<RuleDialogInitialData | undefined>(undefined)
+  const [isBulkBarPulsing, setIsBulkBarPulsing] = useState(false)
+  const [menuEpoch, setMenuEpoch] = useState(0)
+  const bulkTagInputRef = useRef<HTMLInputElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null)
   const highlightId = searchParams.get('highlight')
   const highlightedRowRef = useRef<HTMLTableRowElement | null>(null)
@@ -848,6 +863,16 @@ export default function TransactionsPage() {
       : undefined
 
   const totalPages = data ? Math.ceil(data.total / limit) : 0
+
+  const handleFocusTagInput = () => {
+    setIsBulkBarPulsing(true)
+    setTimeout(() => {
+      bulkTagInputRef.current?.focus()
+    }, 50)
+    setTimeout(() => {
+      setIsBulkBarPulsing(false)
+    }, 800)
+  }
 
   const isTransferCategoryPromptOpen = !!pendingTransferCategoryUpdate
 
@@ -1585,42 +1610,119 @@ export default function TransactionsPage() {
             </TableHeader>
             <TableBody>
               {filteredItems.map((tx) => (
-                <TableRow
-                  key={tx.id}
-                  ref={tx.id === highlightId ? highlightedRowRef : undefined}
-                  className={`hover:bg-muted border-b border-border last:border-0 ${
-                    selectedIds.has(tx.id) ? 'bg-primary/5' : ''
-                  } ${tx.is_shared || !canWrite ? 'cursor-default' : 'cursor-pointer'}`}
-                  onClick={() => {
-                    if (tx.is_shared) {
-                      // Owned by another user — view in the group context instead.
-                      if (tx.group_id) navigate(`/groups/${tx.group_id}`)
-                      return
-                    }
-                    if (!canWrite) return
-                    setEditingTx(tx)
-                    setDialogOpen(true)
-                  }}
-                >
-                  <TableCell style={{ width: 40, minWidth: 40 }} className="py-2.5 pl-4 pr-0">
-                    {/* Bulk operations are scoped to user.id so they
-                        silently skip shared rows — hide the checkbox
-                        on those to avoid the dead-end UX. */}
-                    {canWrite && !tx.is_shared && (
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.has(tx.id)}
-                        onChange={() => {}}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          toggleSelect(tx.id, e.shiftKey)
-                        }}
-                        className="h-4 w-4 rounded border-border accent-primary cursor-pointer"
-                      />
-                    )}
-                  </TableCell>
-                  {grid.visibleColumns.map(col => renderBodyCell(col, tx))}
-                </TableRow>
+                <ContextMenu key={`${tx.id}:${menuEpoch}`}>
+                  <ContextMenuTrigger asChild disabled={!canWrite || tx.is_shared}>
+                    <TableRow
+                      ref={tx.id === highlightId ? highlightedRowRef : undefined}
+                      onContextMenu={() => {
+                        if (canWrite && !tx.is_shared && !selectedIds.has(tx.id)) {
+                          setSelectedIds(new Set([tx.id]))
+                          setLastSelectedId(tx.id)
+                        }
+                      }}
+                      className={`hover:bg-muted border-b border-border last:border-0 ${
+                        selectedIds.has(tx.id) ? 'bg-primary/5' : ''
+                      } ${tx.is_shared || !canWrite ? 'cursor-default' : 'cursor-pointer'}`}
+                      onClick={() => {
+                        if (tx.is_shared) {
+                          // Owned by another user — view in the group context instead.
+                          if (tx.group_id) navigate(`/groups/${tx.group_id}`)
+                          return
+                        }
+                        if (!canWrite) return
+                        setEditingTx(tx)
+                        setDialogOpen(true)
+                      }}
+                    >
+                      <TableCell style={{ width: 40, minWidth: 40 }} className="py-2.5 pl-4 pr-0">
+                        {/* Bulk operations are scoped to user.id so they
+                            silently skip shared rows — hide the checkbox
+                            on those to avoid the dead-end UX. */}
+                        {canWrite && !tx.is_shared && (
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.has(tx.id)}
+                            onChange={() => {}}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              toggleSelect(tx.id, e.shiftKey)
+                            }}
+                            className="h-4 w-4 rounded border-border accent-primary cursor-pointer"
+                          />
+                        )}
+                      </TableCell>
+                      {grid.visibleColumns.map(col => renderBodyCell(col, tx))}
+                    </TableRow>
+                  </ContextMenuTrigger>
+                  <ContextMenuPortal>
+                    <ContextMenuContent className="w-64">
+                      <ContextMenuItem
+                        disabled={!canOpenLinkDialog}
+                        onSelect={() => setLinkTransferDialogOpen(true)}
+                      >
+                        <ArrowLeftRight className="mr-2 h-4 w-4" />
+                        {t('transactions.linkAsTransfer')}
+                      </ContextMenuItem>
+
+                      <ContextMenuSub>
+                        <ContextMenuSubTrigger>
+                          <TagIcon className="mr-2 h-4 w-4" />
+                          {t('transactions.selectCategory')}
+                        </ContextMenuSubTrigger>
+                        <ContextMenuPortal>
+                          <ContextMenuSubContent className="w-64 p-0">
+                            {/* A text field inside a Radix menu would have its arrow keys
+                                and typing (typeahead) handled as menu navigation, so keep
+                                the key events inside the picker. Escape still closes the
+                                menu, as it is handled on the document. */}
+                            <div onKeyDown={(e) => e.stopPropagation()}>
+                              <CategoryPicker
+                                value={null}
+                                onChange={(categoryId) => {
+                                  bulkCategorizeMutation.mutate({ ids: Array.from(selectedIds), categoryId: categoryId || null })
+                                  // Radix's context menu can't be closed from outside and
+                                  // picker rows are not menu items, so remount it to dismiss.
+                                  setMenuEpoch((n) => n + 1)
+                                }}
+                                categories={categoriesList ?? []}
+                                groups={categoryGroupsList ?? []}
+                                allowNone
+                                autoFocus
+                              />
+                            </div>
+                          </ContextMenuSubContent>
+                        </ContextMenuPortal>
+                      </ContextMenuSub>
+
+                      <ContextMenuItem onSelect={() => setBulkAddToGroupOpen(true)}>
+                        <Users className="mr-2 h-4 w-4" />
+                        {t('transactions.addToGroup')}
+                      </ContextMenuItem>
+
+                      <ContextMenuItem onSelect={handleFocusTagInput}>
+                        <TagIcon className="mr-2 h-4 w-4" />
+                        {t('transactions.bulkAddTags')}
+                      </ContextMenuItem>
+
+                      {selectedSingleTx && (
+                        <ContextMenuItem onSelect={() => handleCreateRuleFromTransaction(selectedSingleTx)}>
+                          <SlidersHorizontal className="mr-2 h-4 w-4" />
+                          {t('transactions.createRule')}
+                        </ContextMenuItem>
+                      )}
+
+                      <ContextMenuSeparator />
+                      <ContextMenuItem
+                        variant="destructive"
+                        disabled={bulkDeleteMutation.isPending}
+                        onSelect={() => setBulkDeleteConfirmOpen(true)}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        {t('common.delete')}
+                      </ContextMenuItem>
+                    </ContextMenuContent>
+                  </ContextMenuPortal>
+                </ContextMenu>
               ))}
               {filteredItems.length === 0 && (
                 <TableRow>
@@ -1787,7 +1889,7 @@ export default function TransactionsPage() {
           sidebarCollapsed ? 'lg:left-16' : 'lg:left-60',
         )}>
         <div className="mx-auto max-w-7xl px-3 md:px-6 pb-4 md:pb-6">
-          <div className="flex items-stretch gap-1.5 bg-card border border-border shadow-xl rounded-2xl p-2">
+          <div className="flex items-stretch gap-1.5 bg-card border border-border shadow-xl rounded-2xl p-2 transition-all duration-500">
             <MobileBulkSelectionActions
               selectedCount={selectedIds.size}
               categoryValue={bulkCategory}
@@ -1884,12 +1986,16 @@ export default function TransactionsPage() {
             <div className="w-px bg-border/60 self-stretch" />
 
             {/* Add tags inline */}
-            <div className="flex items-center gap-1 px-1">
+            <div
+              className={`flex items-center gap-1 px-1 rounded-xl transition-all duration-300 ${
+                isBulkBarPulsing ? 'ring-2 ring-primary ring-offset-2 scale-[1.05] bg-primary/5' : ''
+              }`}>
               <input
+                ref={bulkTagInputRef}
                 type="text"
                 value={bulkTagInput}
                 onChange={(e) => setBulkTagInput(e.target.value)}
-                placeholder={t('transactions.addTagsPlaceholder', '#tag…')}
+                placeholder={t('transactions.addTagsPlaceholder')}
                 className="rounded-lg px-2.5 py-2 text-sm bg-transparent text-foreground placeholder:text-muted-foreground/70 focus:outline-none focus:bg-muted/60 w-28 md:w-40"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && bulkTagInput.trim()) {
@@ -1909,7 +2015,7 @@ export default function TransactionsPage() {
                   bulkAddTagsMutation.mutate({ ids: Array.from(selectedIds), tags: tagList })
                 }}
                 className="h-8 w-8 px-0 shrink-0"
-                title={t('transactions.bulkAddTags', 'Add tags')}
+                title={t('transactions.bulkAddTags')}
               >
                 <Check size={15} />
               </Button>
