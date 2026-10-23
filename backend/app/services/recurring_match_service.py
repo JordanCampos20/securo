@@ -143,6 +143,33 @@ def _bill_policy(
     return policy
 
 
+def _pick_across_bills(
+    linked: list[tuple[Any, Any, dict[str, Any]]], composed: dict[str, Any]
+) -> Any:
+    """``pick_linked`` for candidates that each belong to a different bill.
+
+    Each bill was judged under its own ``_bill_policy``, which asks for a
+    single candidate when the bill matches on an approximate amount, and
+    ``composed`` knows nothing of that. So when several bills linked under the
+    winning rule and any of them did so under such a policy, none wins: the
+    charge goes to a person, as it would for one bill with two close charges.
+    """
+    winner, rivals = reconciliation_rule_service.pick_linked(
+        [(candidate, decision) for candidate, decision, _ in linked], composed
+    )
+    if winner is None or len(rivals) < 2:
+        return winner
+    policies = {id(candidate): policy for candidate, _, policy in linked}
+    for candidate, decision in rivals:
+        strategy = next(
+            (s for s in policies[id(candidate)].get("strategies", []) if s["id"] == decision.strategy),
+            {},
+        )
+        if strategy.get("when", {}).get("unique_candidate", False):
+            return None
+    return winner
+
+
 def _as_movement(transaction: Transaction) -> Movement:
     return Movement(
         amount=Decimal(transaction.amount or 0),
@@ -366,6 +393,11 @@ async def find_placeholder_for_incoming(
     for placeholder, bill in rows:
         if placeholder.is_ignored:
             continue
+        policy = _bill_policy(
+            reconciliation_rule_service.narrow_for_frequency(composed, bill.frequency),
+            bill,
+            description,
+        )
         decision = evaluate(
             charge,
             [
@@ -380,15 +412,11 @@ async def find_placeholder_for_incoming(
                     account_id=placeholder.account_id,
                 )
             ],
-            _bill_policy(
-                reconciliation_rule_service.narrow_for_frequency(composed, bill.frequency),
-                bill,
-                description,
-            ),
+            policy,
         )
         if decision.port == "linked":
-            linked.append((placeholder, decision))
-    return reconciliation_rule_service.pick_linked(linked, composed)[0]
+            linked.append((placeholder, decision, policy))
+    return _pick_across_bills(linked, composed)
 
 
 async def find_bill_for_incoming(
@@ -449,22 +477,19 @@ async def find_bill_for_incoming(
         # otherwise never meet a charge again, and every later month would
         # be projected next to the charge that paid it.
         _, occurrence = nearest_occurrence(recurring, tx_date)
-        decision = evaluate(
-            charge,
-            [_as_occurrence(recurring, occurrence)],
-            _bill_policy(
-                reconciliation_rule_service.narrow_for_frequency(
-                    composed, recurring.frequency
-                ),
-                recurring,
-                description,
+        policy = _bill_policy(
+            reconciliation_rule_service.narrow_for_frequency(
+                composed, recurring.frequency
             ),
+            recurring,
+            description,
         )
+        decision = evaluate(charge, [_as_occurrence(recurring, occurrence)], policy)
         if decision.port == "linked":
-            linked.append((recurring, decision))
+            linked.append((recurring, decision, policy))
     if composed is None:
         return None
-    return reconciliation_rule_service.pick_linked(linked, composed)[0]
+    return _pick_across_bills(linked, composed)
 
 
 def advance_past(recurring: RecurringTransaction, fulfilled_date: date) -> None:
