@@ -368,7 +368,7 @@ function RecurringForm({
   )
   // Country names follow the UI language, not the currency-derived display
   // locale: a Hindi UI with BRL amounts should still read "ब्राज़ील".
-  const displayLocale = i18n.language
+  const uiLocale = i18n.language
   const { data: holidayCalendars } = useQuery({
     queryKey: ['holiday-calendars'],
     queryFn: recurringApi.holidayCalendars,
@@ -377,16 +377,16 @@ function RecurringForm({
   const holidayCountries = useMemo(
     () =>
       (holidayCalendars ?? [])
-        .map((c) => ({ ...c, name: countryName(c.country, displayLocale) }))
-        .sort((a, b) => a.name.localeCompare(b.name, displayLocale)),
-    [holidayCalendars, displayLocale]
+        .map((c) => ({ ...c, name: countryName(c.country, uiLocale) }))
+        .sort((a, b) => a.name.localeCompare(b.name, uiLocale)),
+    [holidayCalendars, uiLocale]
   )
   const holidayRegions = useMemo(
     () =>
       [...(holidayCountries.find((c) => c.country === holidayCountry)?.subdivisions ?? [])].sort((a, b) =>
-        a.name.localeCompare(b.name, displayLocale)
+        a.name.localeCompare(b.name, uiLocale)
       ),
-    [holidayCountries, holidayCountry, displayLocale]
+    [holidayCountries, holidayCountry, uiLocale]
   )
   const holidayCalendar = holidayCountry ? (holidayRegion ? `${holidayCountry}-${holidayRegion}` : holidayCountry) : null
   const [graceDays, setGraceDays] = useState(recurring?.grace_days?.toString() ?? '0')
@@ -545,7 +545,7 @@ function RecurringForm({
               <option value="">{t('recurring.holidayCalendarNone')}</option>
               {/* Keep a saved calendar selectable while the list loads. */}
               {holidayCountry && !holidayCountries.some((c) => c.country === holidayCountry) && (
-                <option value={holidayCountry}>{countryName(holidayCountry, displayLocale)}</option>
+                <option value={holidayCountry}>{countryName(holidayCountry, uiLocale)}</option>
               )}
               {holidayCountries.map((c) => (
                 <option key={c.country} value={c.country}>{c.name}</option>
