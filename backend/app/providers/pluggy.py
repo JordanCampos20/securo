@@ -3,6 +3,7 @@ import calendar
 import hashlib
 import json
 import logging
+import re
 import time
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -20,6 +21,7 @@ from app.providers.base import (
     ConnectTokenData,
     HoldingData,
     RefreshOutcome,
+    ReservedBalanceData,
     TransactionData,
     mask_last4,
 )
@@ -279,6 +281,37 @@ _HOLDING_PROMOTED_KEYS = {
 # would produce badly-wrong evolution charts, so we skip it for those.
 _ISSUE_DATE_IS_PURCHASE_DATE = {"FIXED_INCOME", "COE"}
 
+# Pluggy `type` values whose `code` is a B3 trading symbol (stocks, units,
+# FIIs, BDRs and ETFs). Fixed income, funds and pensions reuse `code` for
+# other identifiers (contract numbers, CNPJs), so they are left alone.
+_EXCHANGE_TRADED_TYPES = {"EQUITY", "ETF"}
+
+# A B3 symbol: a four-character root (letters, or alphanumeric for some ETFs
+# such as "B5P2") plus a one- or two-digit class, optionally followed by the
+# odd-lot "F" suffix ("PETR4F" trades the same share as "PETR4").
+_B3_SYMBOL = re.compile(r"^([A-Z][A-Z0-9]{3}\d{1,2})F?$")
+
+
+def _b3_market_ticker(inv: dict) -> Optional[str]:
+    """Yahoo Finance symbol ("PSSA3.SA") for an exchange-traded B3 holding.
+
+    Returns None whenever the payload does not clearly describe a B3-listed
+    position, so a wrong guess never reaches the market-data lookup: the
+    holding then stays valued by the provider and the user can link a ticker
+    by hand.
+    """
+    if (inv.get("type") or "").upper() not in _EXCHANGE_TRADED_TYPES:
+        return None
+    if (inv.get("currencyCode") or "BRL").upper() != "BRL":
+        return None
+    code = inv.get("code")
+    if not isinstance(code, str):
+        return None
+    match = _B3_SYMBOL.match(code.strip().upper())
+    if match is None:
+        return None
+    return f"{match.group(1)}.SA"
+
 
 def _build_holding_data(inv: dict) -> HoldingData:
     """Map a Pluggy investment payload to HoldingData.
@@ -307,6 +340,7 @@ def _build_holding_data(inv: dict) -> HoldingData:
     # would drop a real balance from the user's view.
     position_has_value = current_value != 0 or (quantity is not None and quantity != 0)
     is_withdrawn = pluggy_status == "TOTAL_WITHDRAWAL" and not position_has_value
+    ticker = _b3_market_ticker(inv)
 
     return HoldingData(
         external_id=str(inv["id"]),
@@ -318,7 +352,10 @@ def _build_holding_data(inv: dict) -> HoldingData:
         purchase_price=_decimal_or_none(inv.get("amountOriginal")),
         purchase_date=purchase_date,
         isin=inv.get("isin") or None,
+        ticker=ticker,
+        ticker_quotable=ticker is not None,
         maturity_date=_date_or_none(inv.get("dueDate")),
+        value_date=_date_or_none(inv.get("date")),
         is_withdrawn=is_withdrawn,
         metadata=metadata or None,
     )
@@ -351,6 +388,85 @@ def _build_bill_data(raw: dict) -> Optional[BillData]:
         minimum_payment=_decimal_or_none(raw.get("minimumPaymentAmount")),
         raw_data=raw,
     )
+
+
+def _reserved_balances(account: dict) -> Optional[list[ReservedBalanceData]]:
+    """Reserved/earmarked funds the account holds, or None when unreported.
+
+    Pluggy exposes Mercado Pago cofrinhos and other "saldo reservado" in
+    ``bankData.reservedBalances`` without documenting whether they are inside
+    ``balance``. They are stored and shown separately, never added to a total
+    (ADR 0022).
+
+    None means the collection is unreported or cannot be read in full, so
+    stored rows stay as they are. Only an explicitly empty collection means
+    there are no active reservations. ``availableAmounts`` carries one entry
+    per remuneration band, summed per currency; any unreadable entry or band
+    makes the entire collection unknown rather than silently dropping money.
+    """
+    bank_data = account.get("bankData")
+    if not isinstance(bank_data, dict):
+        return None
+    if bank_data.get("hasReservedBalance") is False:
+        return []
+    raw = bank_data.get("reservedBalances")
+    if not isinstance(raw, list):
+        return None
+    if not raw:
+        return []
+
+    rows: list[ReservedBalanceData] = []
+    complete = True
+    for entry in raw:
+        if not isinstance(entry, dict):
+            complete = False
+            continue
+        identification = entry.get("identification")
+        if not isinstance(identification, (str, int)) or isinstance(identification, bool):
+            complete = False
+            continue
+        external_id = str(identification).strip()
+        if not external_id:
+            complete = False
+            continue
+        raw_name = entry.get("name")
+        name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else None
+        # One entry per remuneration band: sum them per currency. `remuneration`
+        # is display metadata and never adjusts the amount.
+        totals: dict[str, Decimal] = {}
+        bands = entry.get("availableAmounts")
+        if not isinstance(bands, list) or not bands:
+            complete = False
+            continue
+        for band in bands:
+            if not isinstance(band, dict):
+                complete = False
+                continue
+            currency = band.get("currencyCode")
+            if not isinstance(currency, str) or not currency:
+                complete = False
+                continue
+            amount = _decimal_or_none(band.get("amount"))
+            if amount is None or not amount.is_finite() or amount < 0:
+                complete = False
+                continue
+            totals[currency] = totals.get(currency, Decimal(0)) + amount
+        for currency, amount in totals.items():
+            rows.append(
+                ReservedBalanceData(
+                    external_id=external_id, name=name, currency=currency, amount=amount
+                )
+            )
+
+    if not complete or not rows:
+        logger.warning(
+            "Pluggy reported incomplete reserved balances for account %s; "
+            "keeping stored rows",
+            account.get("id"),
+        )
+        return None
+    rows.sort(key=lambda r: (r.external_id, r.currency))
+    return rows
 
 
 def _auto_invested_balance(account: dict) -> Decimal:
@@ -418,12 +534,14 @@ def _build_account_data(acc: dict, type_mapper) -> AccountData:
             credit_data, acc.get("balance"), acc.get("currencyCode") or "USD"
         )
 
+    account_currency = acc.get("currencyCode", "USD")
+
     return AccountData(
         external_id=acc["id"],
         name=acc["name"],
         type=account_type,
         balance=Decimal(str(acc.get("balance", 0))),
-        currency=acc.get("currencyCode", "USD"),
+        currency=account_currency,
         credit_limit=credit_limit,
         statement_close_day=statement_close_day,
         payment_due_day=payment_due_day,
@@ -437,6 +555,7 @@ def _build_account_data(acc: dict, type_mapper) -> AccountData:
         auto_invested_balance=(
             Decimal(0) if account_type == "credit_card" else _auto_invested_portion(acc)
         ),
+        reserved_balances=_reserved_balances(acc),
     )
 
 
@@ -735,6 +854,14 @@ class PluggyProvider(BankProvider):
                     bill_external_id = (
                         str(bill_external_id_raw) if bill_external_id_raw else None
                     )
+                    # Only a string can be a card number; mask_last4 would
+                    # turn a stray boolean into the ending "True".
+                    raw_card_number = cc_meta.get("cardNumber")
+                    card_masked_number = (
+                        mask_last4(raw_card_number)
+                        if isinstance(raw_card_number, str)
+                        else None
+                    )
 
                     all_transactions.append(
                         TransactionData(
@@ -754,6 +881,7 @@ class PluggyProvider(BankProvider):
                             installment_total_amount=inst_total_amount_dec,
                             installment_purchase_date=inst_purchase_date,
                             bill_external_id=bill_external_id,
+                            card_masked_number=card_masked_number,
                         )
                     )
 

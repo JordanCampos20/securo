@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, ArrowRight, ExternalLink, Globe, KeyRound, Plug, RefreshCw, ShieldCheck, Star, Trash2 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ChartColumnBig, ExternalLink, Globe, KeyRound, Plug, RefreshCw, ShieldCheck, Star, Trash2 } from 'lucide-react'
 
 import { CategoryIcon } from '@/components/category-icon'
 import { PluginAvatar } from '@/components/plugin-avatar'
@@ -17,7 +17,7 @@ import { useWorkspace } from '@/contexts/workspace-context'
 import { plugins as pluginsApi } from '@/lib/api'
 import { localized } from '@/lib/localized-text'
 import { pluginTheme } from '@/lib/themes'
-import { contributedKinds, pluginLocales, pluginTypes } from '@/lib/plugin-catalog'
+import { contributedKinds, onlyFor, pluginLocales, pluginTypes } from '@/lib/plugin-catalog'
 import { compactNumber, languageName, relativeDate, scopeLabel } from '@/lib/plugin-format'
 import { conditionSummary } from '@/lib/rule-summary'
 import { cn } from '@/lib/utils'
@@ -83,7 +83,7 @@ export default function PluginDetailPage() {
             {notFound ? t('plugins.detail.notFound') : t('plugins.detail.loadFailed')}
             {!notFound && (
               <Button variant="outline" size="sm" onClick={() => void refetch()}>
-                <RefreshCw size={14} className="mr-1" />
+                <RefreshCw size={14} className="me-1" />
                 {t('common.retry')}
               </Button>
             )}
@@ -124,7 +124,7 @@ export default function PluginDetailPage() {
       {back}
 
       <header className="mb-8 flex gap-5">
-        <PluginAvatar seed={plugin.id} label={pluginName} className="size-14 text-lg sm:size-16 sm:text-xl" />
+        <PluginAvatar seed={plugin.id} label={pluginName} src={plugin.icon_url} className="size-14 text-lg sm:size-16 sm:text-xl" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <h1 className="text-2xl font-semibold tracking-tight">{pluginName}</h1>
@@ -207,7 +207,7 @@ export default function PluginDetailPage() {
 
 function Actions({ plugin, canWrite, onAction }: { plugin: PluginCatalogEntry; canWrite: boolean; onAction: (action: PluginAction) => void }) {
   const { t } = useTranslation()
-  const installable = canWrite && !plugin.revoked && plugin.compatible && plugin.supported
+  const installable = canWrite && !plugin.revoked && plugin.compatible && plugin.supported && plugin.fits_workspace
   return (
     <div className="space-y-2">
       {installable && plugin.update_available && (
@@ -219,7 +219,7 @@ function Actions({ plugin, canWrite, onAction }: { plugin: PluginCatalogEntry; c
       {canWrite && plugin.installed_version && (
         // Always offered to an installed plugin, revoked or not: removing never needs the catalog.
         <Button variant="outline" className="w-full text-destructive hover:text-destructive" onClick={() => onAction('remove')}>
-          <Trash2 size={14} className="mr-1.5" />
+          <Trash2 size={14} className="me-1.5" />
           {t('plugins.remove')}
         </Button>
       )}
@@ -228,7 +228,7 @@ function Actions({ plugin, canWrite, onAction }: { plugin: PluginCatalogEntry; c
       )}
       <Button asChild variant="outline" className="w-full">
         <a href={`${plugin.repository}/tree/${plugin.commit}`} target="_blank" rel="noopener noreferrer">
-          <ExternalLink size={14} className="mr-1.5" />
+          <ExternalLink size={14} className="me-1.5" />
           {t('plugins.viewSource')}
         </a>
       </Button>
@@ -240,11 +240,16 @@ function Facts({ plugin }: { plugin: PluginCatalogEntry }) {
   const { t, i18n } = useTranslation()
   const lang = i18n.language
   const locales = pluginLocales(plugin)
+  const only = onlyFor(plugin)
+  const workspacesLabel = only
+    ? t(only === 'business' ? 'plugins.onlyForBusiness' : 'plugins.onlyForPersonal')
+    : t('plugins.detail.anyWorkspace')
   const rows: [string, React.ReactNode][] = [
     [t('plugins.detail.type'), <span className="inline-flex flex-wrap justify-end gap-x-2"><PluginTypes entry={plugin} /></span>],
     [t('plugins.detail.version'), <span className="tabular-nums">{plugin.version}</span>],
     [t('plugins.detail.license'), plugin.license],
     [t('plugins.detail.requires'), <span className="tabular-nums">Securo {plugin.min_securo_version}+</span>],
+    [t('plugins.detail.workspaces'), workspacesLabel],
     ...(plugin.updated_at ? [[t('plugins.detail.updated'), relativeDate(plugin.updated_at, lang)] as [string, React.ReactNode]] : []),
     ...(plugin.added_at ? [[t('plugins.detail.added'), relativeDate(plugin.added_at, lang)] as [string, React.ReactNode]] : []),
     ...(locales.length
@@ -257,7 +262,7 @@ function Facts({ plugin }: { plugin: PluginCatalogEntry }) {
         {rows.map(([label, value]) => (
           <div key={label} className="flex items-baseline justify-between gap-4 py-2.5">
             <dt className="shrink-0 text-muted-foreground">{label}</dt>
-            <dd className="min-w-0 text-right font-medium">{value}</dd>
+            <dd className="min-w-0 text-end font-medium">{value}</dd>
           </div>
         ))}
       </dl>
@@ -360,6 +365,19 @@ function Contents({ contents }: { contents: PluginContents }) {
           </ul>
         </section>
       )}
+      <ContentSection title={t('plugins.kindName.reports')} count={contents.reports?.length ?? 0}>
+        {(contents.reports ?? []).map((report) => (
+          <li key={report.key} className="flex items-center gap-3 px-4 py-2.5">
+            <ChartColumnBig size={15} className="shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">{localized(report.name, lang)}</span>
+            <span className="shrink-0 text-xs text-muted-foreground">
+              {report.code || !report.group_by
+                ? t('reports.pluginReport.computed')
+                : `${t(`reports.pluginReport.measure.${report.measure}`)} · ${t(`reports.pluginReport.groupBy.${report.group_by}`)}`}
+            </span>
+          </li>
+        ))}
+      </ContentSection>
       <ContentSection title={t('plugins.kindName.integrations')} count={contents.integrations?.length ?? 0}>
         {(contents.integrations ?? []).map((integration) => (
           <li key={integration.key} className="flex items-center gap-3 px-4 py-2.5">

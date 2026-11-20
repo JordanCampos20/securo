@@ -19,6 +19,9 @@ class PluginIntegrationRead(BaseModel):
     auth: Literal["credentials", "oauth", "none"]
     fields: list[PluginFieldRead] = []
     sync_minutes: int | None = None
+    provides: list[str] | None = Field(
+        default=None, description="Records it syncs as a connected bank: accounts, transactions, bills, holdings, trades."
+    )
 
 
 class PluginHostRead(BaseModel):
@@ -40,6 +43,19 @@ class PluginThemeRead(BaseModel):
     font: Literal["sans", "mono", "serif"] | None = None
 
 
+class PluginReportDefinitionRead(BaseModel):
+    """A report a plugin adds to the library: what it adds up and how it's drawn."""
+
+    key: str
+    name: dict[str, str]
+    description: dict[str, str] | None = None
+    code: bool = False
+    inputs: list[Literal["transactions", "accounts", "categories"]] = []
+    measure: Literal["expenses", "income", "net"]
+    group_by: Literal["category", "category_group", "payee", "account", "month"] | None = None
+    chart: Literal["bar", "line", "area", "pie", "table"]
+
+
 class InstalledPluginRead(BaseModel):
     """A catalog plugin installed in this workspace, as recorded here: no catalog needed."""
 
@@ -55,6 +71,7 @@ class InstalledPluginRead(BaseModel):
         default=None, description="For sign-in integrations: the address to register with the service."
     )
     themes: list[PluginThemeRead] = Field(default=[], description="Themes it adds to the library.")
+    reports: list[PluginReportDefinitionRead] = Field(default=[], description="Reports it adds to the library.")
 
 
 class PluginCatalogRead(BaseModel):
@@ -81,6 +98,11 @@ class PluginCatalogRead(BaseModel):
     revoked_reason: str | None
     compatible: bool = Field(description="This Securo is at least min_securo_version.")
     supported: bool = Field(description="This Securo can apply everything the plugin contributes.")
+    workspaces: list[str] = Field(description="The workspace types it's meant for.")
+    fits_workspace: bool = Field(description="It's meant for this workspace's type.")
+    icon_url: str | None = Field(
+        default=None, description="Where Securo serves the plugin's icon; none draws the generated badge."
+    )
     installed_version: str | None
     update_available: bool
 
@@ -128,6 +150,7 @@ class PluginContentsRead(BaseModel):
     network: list[PluginHostRead] = []
     api_scopes: list[PluginScopeRead] = []
     themes: list[PluginThemeRead] = []
+    reports: list[PluginReportDefinitionRead] = []
 
 
 class PluginDetailRead(BaseModel):
@@ -186,6 +209,7 @@ class PluginCodeIntegrationRead(BaseModel):
     key: str
     name: dict[str, str]
     auth: Literal["credentials", "oauth", "none"]
+    provides: list[str] | None = None
 
 
 class PluginCodeConsentRead(BaseModel):
@@ -196,6 +220,7 @@ class PluginCodeConsentRead(BaseModel):
     new_scopes: list[str]
     connections: int = Field(description="Connections in this workspace; removed along with the plugin.")
     drops_code: bool = Field(default=False, description="An update to a version without code: connections go too.")
+    unlinks: int = Field(default=0, description="Bank connections the change ends; their accounts stay, as manual ones.")
 
 
 class PluginConnectionRead(BaseModel):
@@ -221,6 +246,11 @@ class PluginConnectionCreate(BaseModel):
     integration: str = Field(max_length=64)
     name: str = Field(default="", max_length=100)
     values: dict[str, Any] = {}
+
+
+class PluginConnectionUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=100)
+    values: dict[str, Any] = Field(default={}, description="Fields left out or blank keep their value.")
 
 
 class PluginConnectionCreated(BaseModel):
