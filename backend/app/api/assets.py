@@ -315,12 +315,12 @@ async def preview_asset_import(
             detail="Market data provider is currently rate-limiting. Try again in a minute.",
         )
 
-    # The dry run rejects rows the parser could not know about — an unknown
-    # ticker, a sell with nothing to sell. Drop those from the list too, so the
-    # table, the count and the button all describe the same import.
-    rejected = {e.row for e in summary["errors"]}
+    # The dry run leaves out the rows it rejects (an unknown ticker, a sell
+    # with nothing to sell) and the ones already in the ledger, and hands back
+    # what each kept row is worth in its own currency, so the table, the count
+    # and the button all describe the same import.
     return AssetImportPreview(
-        orders=[o for o in orders if o.row not in rejected],
+        orders=summary["orders"],
         errors=errors + summary["errors"],
         warnings=summary["warnings"],
         csv_columns=columns,
@@ -421,6 +421,47 @@ async def link_asset_ticker(
     if linked.currency != primary_currency:
         await asset_service.stamp_primary_values(session, linked, primary_currency)
     return linked
+
+
+@router.delete("/{asset_id}/link-ticker", response_model=AssetRead)
+async def unlink_asset_ticker(
+    asset_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(current_writable_workspace),
+    session: AsyncSession = Depends(get_async_session),
+) -> AssetRead:
+    """Return a synced holding priced by a linked ticker to its provider's value.
+
+    The way back from a link, made by hand or by the sync: the holding is
+    valued by what the bank reports again, out of the daily price refresh,
+    and later syncs do not link it again. Idempotent.
+    """
+    from app.models.asset import Asset as AssetModel
+    from sqlalchemy import select as sa_select
+
+    result = await session.execute(
+        sa_select(AssetModel).where(
+            AssetModel.id == asset_id, AssetModel.workspace_id == ctx.workspace.id
+        )
+    )
+    asset = result.scalar_one_or_none()
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+    if asset.connection_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Only holdings synced from a bank connection can be unlinked from a ticker",
+        )
+
+    await asset_service.unlink_market_ticker(session, asset)
+    await session.commit()
+
+    unlinked = await asset_service.get_asset(session, asset_id, ctx.workspace.id)
+    if unlinked is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+    primary_currency = ctx.user.primary_currency
+    if unlinked.currency != primary_currency:
+        await asset_service.stamp_primary_values(session, unlinked, primary_currency)
+    return unlinked
 
 
 @router.get("/{asset_id}/transactions", response_model=list[AssetTransactionRead])

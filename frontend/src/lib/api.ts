@@ -1198,6 +1198,12 @@ export const rules = {
     const { data } = await api.get('/rules')
     return data
   },
+  /** Provider categories the workspace already received, for the
+   * `provider_category` condition's suggestions. */
+  providerCategories: async (): Promise<string[]> => {
+    const { data } = await api.get('/rules/provider-categories')
+    return data
+  },
   create: async (rule: Omit<Rule, 'id' | 'user_id'>): Promise<Rule & { applied_count: number }> => {
     const { data } = await api.post('/rules', rule)
     return data
@@ -1386,10 +1392,15 @@ export const recurring = {
     const { data } = await api.get('/recurring-transactions')
     return data
   },
-  // `skip_first` is write-only: it moves the first occurrence one period ahead
-  // when the transaction that would cover it already exists.
+  // `skip_first` and `source_transaction_id` are write-only: the first moves
+  // the first occurrence one period ahead when the transaction that would
+  // cover it already exists, and the second links that transaction to the new
+  // bill so it is not offered again.
   create: async (
-    rt: Partial<RecurringTransaction> & { skip_first?: boolean },
+    rt: Partial<RecurringTransaction> & {
+      skip_first?: boolean
+      source_transaction_id?: string
+    },
   ): Promise<RecurringTransaction> => {
     const { data } = await api.post('/recurring-transactions', rt)
     return data
@@ -1641,6 +1652,11 @@ export const assets = {
   // Price a bank-synced holding from the market under `ticker`.
   linkTicker: async (id: string, ticker: string): Promise<Asset> => {
     const { data } = await api.post(`/assets/${id}/link-ticker`, { ticker })
+    return data
+  },
+  // Value a bank-synced holding by what the bank reports again.
+  unlinkTicker: async (id: string): Promise<Asset> => {
+    const { data } = await api.delete(`/assets/${id}/link-ticker`)
     return data
   },
   // Transaction ledger (issue #235)

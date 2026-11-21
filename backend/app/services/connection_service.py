@@ -16,7 +16,11 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.app_clock import app_today
 from app.core.config import get_settings
-from app.models.asset import PROVIDER_VALUE_DATE_METADATA_KEY, Asset
+from app.models.asset import (
+    PROVIDER_VALUE_DATE_METADATA_KEY,
+    PROVIDER_VALUE_METADATA_KEY,
+    Asset,
+)
 from app.models.asset_group import AssetGroup
 from app.models.asset_transaction import AssetTransaction
 from app.models.asset_value import AssetValue
@@ -1054,7 +1058,11 @@ async def _sync_holdings(
         if asset.sell_date is None:
             await ticker_linker.link(session, asset, holding)
             await _upsert_asset_value_for_today(
-                session, asset, _holding_value_for_today(asset, holding), today
+                session,
+                asset,
+                _holding_value_for_today(asset, holding),
+                today,
+                price=_holding_price_for_today(asset),
             )
 
     for ext_id, asset in archive_candidates.items():
@@ -1261,7 +1269,11 @@ async def _sync_holding_trades(
             # Reopened by this sync: the value step above skipped it while it
             # still read as sold, so record today's value now.
             await _upsert_asset_value_for_today(
-                session, asset, _holding_value_for_today(asset, holding), app_today()
+                session,
+                asset,
+                _holding_value_for_today(asset, holding),
+                app_today(),
+                price=_holding_price_for_today(asset),
             )
 
 
@@ -1274,7 +1286,7 @@ def _provider_metadata(holding: HoldingData) -> Optional[dict]:
     return {
         key: value
         for key, value in (holding.metadata or {}).items()
-        if key != PROVIDER_VALUE_DATE_METADATA_KEY
+        if key not in (PROVIDER_VALUE_DATE_METADATA_KEY, PROVIDER_VALUE_METADATA_KEY)
     } or None
 
 
@@ -1288,6 +1300,10 @@ def _holding_metadata(holding: HoldingData) -> Optional[dict]:
     metadata = _provider_metadata(holding) or {}
     if holding.value_date is not None:
         metadata[PROVIDER_VALUE_DATE_METADATA_KEY] = holding.value_date.isoformat()
+    if holding.current_value is not None:
+        # Kept so unlinking a ticker can put the provider's figure back at once
+        # (asset_service.unlink_market_ticker) instead of waiting for a sync.
+        metadata[PROVIDER_VALUE_METADATA_KEY] = str(holding.current_value)
     return metadata or None
 
 
@@ -1309,19 +1325,30 @@ class _QuotableTickerLinker:
     async def link(self, session: AsyncSession, asset: Asset, holding: HoldingData) -> None:
         if self._rate_limited or asset.ticker or not (holding.ticker_quotable and holding.ticker):
             return
+        # Read before the savepoint: a rollback expires the asset's attributes.
+        external_id = asset.external_id
         try:
-            await asset_service.link_market_ticker(session, asset, holding.ticker)
+            # A savepoint keeps a failure to this one holding: a database error
+            # in the price write would otherwise leave the whole sync's
+            # transaction aborted, and the asset holding a ticker that the
+            # next sync never retries.
+            async with session.begin_nested():
+                await asset_service.link_market_ticker(session, asset, holding.ticker)
+            return
         except asset_service.TickerLinkError as exc:
             logger.info(
-                "Holding %s keeps provider valuation: %s", asset.external_id, exc
+                "Holding %s keeps provider valuation: %s", external_id, exc
             )
         except MarketPriceRateLimitedError:
             self._rate_limited = True
             logger.warning("Market data rate-limited; ticker linking resumes next sync")
         except Exception:  # noqa: BLE001 - a quote failure must never fail the sync
             logger.warning(
-                "Ticker lookup failed for holding %s", asset.external_id, exc_info=True
+                "Ticker lookup failed for holding %s", external_id, exc_info=True
             )
+        # The rolled-back savepoint expired what the link had set on the asset;
+        # reload it so the rest of the sync reads the stored (unlinked) state.
+        await session.refresh(asset)
 
 
 def _holding_value_for_today(asset: Asset, holding: HoldingData):
@@ -1334,6 +1361,19 @@ def _holding_value_for_today(asset: Asset, holding: HoldingData):
     if asset.valuation_method == "market_price" and asset.last_price is not None and asset.units:
         return Decimal(str(asset.last_price)) * Decimal(str(asset.units))
     return holding.current_value
+
+
+def _holding_price_for_today(asset: Asset) -> Optional[Decimal]:
+    """Per-share price behind today's point, when it is units × quote.
+
+    Stored on the AssetValue like a manual market-priced holding's, so the
+    history rebuild recomputes the point from the ledger quantity when a
+    later trade correction moves units across dates, instead of keeping a
+    baked amount. None for a provider-valued point.
+    """
+    if asset.valuation_method == "market_price" and asset.last_price is not None and asset.units:
+        return Decimal(str(asset.last_price))
+    return None
 
 
 async def _upsert_asset_from_holding(
@@ -1414,7 +1454,10 @@ async def _upsert_asset_from_holding(
         asset.purchase_date = holding.purchase_date
     if holding.isin:
         asset.isin = holding.isin
-    if holding.ticker and not holding.ticker_quotable:
+    # A raw label never replaces the symbol a market-priced holding is quoted
+    # under: that ticker was confirmed by a quote or linked by the user, and
+    # its price and logo belong to it.
+    if holding.ticker and not holding.ticker_quotable and asset.valuation_method != "market_price":
         asset.ticker = holding.ticker
     if holding.maturity_date:
         asset.maturity_date = holding.maturity_date
@@ -1456,11 +1499,15 @@ async def _upsert_asset_value_for_today(
     asset: Asset,
     amount,
     today: date,
+    *,
+    price: Optional[Decimal] = None,
 ) -> None:
     """One sync-sourced AssetValue per asset per day.
 
     Re-syncing the same day updates the amount in place; a later day
     creates a new row so we build a daily valuation history over time.
+    `price` is the per-share quote when the amount is units × quote, and
+    None for a provider-valued amount (which also clears a stale one).
     """
     existing = await session.execute(
         select(AssetValue).where(
@@ -1472,11 +1519,13 @@ async def _upsert_asset_value_for_today(
     row = existing.scalar_one_or_none()
     if row is not None:
         row.amount = amount
+        row.price = price
     else:
         session.add(
             AssetValue(
                 asset_id=asset.id,
                 amount=amount,
+                price=price,
                 date=today,
                 source="sync",
             )
@@ -1762,6 +1811,83 @@ async def update_connection_settings(
     return connection
 
 
+def _reactivate_connection(
+    connection: BankConnection, connection_data,
+) -> None:
+    """Point a connection at the credentials and provider ids of a new session.
+
+    Everything the provider owns follows the new authorization; what the user
+    owns — the name, the settings, the accounts and their history — stays.
+    `last_sync_at` restarts the window so the next sync reconciles the
+    accounts against a feed whose ids belong to another session.
+    """
+    connection.external_id = connection_data.external_id
+    connection.institution_name = (
+        connection_data.institution_name or connection.institution_name
+    )
+    connection.logo_url = _clean_logo_url(connection_data.logo_url) or connection.logo_url
+    connection.credentials = connection_data.credentials
+    connection.status = "active"
+    # Re-sync from current data on next sync cycle.
+    connection.last_sync_at = None
+    # New credentials end a backoff earned by failing ones, so the next
+    # cycle syncs it. A rate-limit backoff stays: the bank's quota is the
+    # same whatever the credentials.
+    reconnect_settings = connection.settings or {}
+    backoff = reconnect_settings.get(SYNC_BACKOFF_KEY)
+    if backoff is not None and not (
+        isinstance(backoff, dict) and backoff.get("rate_limited") is True
+    ):
+        connection.settings = {
+            key: value
+            for key, value in reconnect_settings.items()
+            if key != SYNC_BACKOFF_KEY
+        }
+    # The failure the old credentials left no longer says anything.
+    connection.settings = _with_sync_failure(connection.settings, None)
+
+
+async def _connection_holding_these_accounts(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    provider_name: str,
+    accounts: Sequence[AccountData],
+) -> Optional[BankConnection]:
+    """The connected bank these provider accounts already belong to (#1224).
+
+    Connecting a bank again from the Accounts page, instead of pressing
+    Reconnect, used to create a second connection and a second row for every
+    account the first one already held. Enable Banking scopes an account's
+    `uid` to one session, so a new consent renames every account and nothing
+    on the row matches by id. The identification hash survives the session and
+    names the same real account across sessions, so an incoming account whose
+    hash a live connection of this provider already holds says the user is
+    re-authorising that connection, not adding a second one.
+
+    Two connections holding the hash, or none, leaves the answer open and the
+    caller creates a connection as before: a hash two logins share is not
+    enough to pick one. A different login into the same bank names different
+    accounts and matches nothing here.
+    """
+    hashes = {a.stable_external_id for a in accounts if a.stable_external_id}
+    if not hashes:
+        return None
+    connection_ids = (await session.execute(
+        select(Account.connection_id)
+        .join(BankConnection, BankConnection.id == Account.connection_id)
+        .where(
+            BankConnection.workspace_id == workspace_id,
+            BankConnection.provider == provider_name,
+            BankConnection.status != DISCONNECTED_STATUS,
+            Account.stable_external_id.in_(hashes),
+        )
+        .distinct()
+    )).scalars().all()
+    if len(connection_ids) != 1:
+        return None
+    return await session.get(BankConnection, connection_ids[0])
+
+
 async def handle_oauth_callback(
     session: AsyncSession,
     workspace_id: uuid.UUID,
@@ -1803,31 +1929,13 @@ async def handle_oauth_callback(
     provider = get_provider(provider_name, settings=await resolve_settings(session))
     connection_data = await provider.handle_oauth_callback(code)
 
-    if existing_reconnect:
-        existing_reconnect.external_id = connection_data.external_id
-        existing_reconnect.institution_name = (
-            connection_data.institution_name or existing_reconnect.institution_name
+    if existing_reconnect is None:
+        existing_reconnect = await _connection_holding_these_accounts(
+            session, workspace_id, provider_name, connection_data.accounts
         )
-        existing_reconnect.logo_url = _clean_logo_url(connection_data.logo_url) or existing_reconnect.logo_url
-        existing_reconnect.credentials = connection_data.credentials
-        existing_reconnect.status = "active"
-        # Re-sync from current data on next sync cycle.
-        existing_reconnect.last_sync_at = None
-        # New credentials end a backoff earned by failing ones, so the next
-        # cycle syncs it. A rate-limit backoff stays: the bank's quota is the
-        # same whatever the credentials.
-        reconnect_settings = existing_reconnect.settings or {}
-        backoff = reconnect_settings.get(SYNC_BACKOFF_KEY)
-        if backoff is not None and not (
-            isinstance(backoff, dict) and backoff.get("rate_limited") is True
-        ):
-            existing_reconnect.settings = {
-                key: value
-                for key, value in reconnect_settings.items()
-                if key != SYNC_BACKOFF_KEY
-            }
-        # The failure the old credentials left no longer says anything.
-        existing_reconnect.settings = _with_sync_failure(existing_reconnect.settings, None)
+
+    if existing_reconnect:
+        _reactivate_connection(existing_reconnect, connection_data)
         await session.commit()
         await session.refresh(existing_reconnect)
         return existing_reconnect
@@ -3068,6 +3176,15 @@ async def _find_synced_duplicate(
     # hold's date, up to `_EB_HOLD_SETTLE_DAYS` before the booking. It is
     # compared by the date its stored booked payload carries as well, so a
     # later change to that payload still re-keys it.
+    #
+    # Some institutions re-issue the reference itself: Bankinter sends a new
+    # tail for every entry of the last weeks on each fetch (#612), so the id
+    # the held row was stored under never comes back. Such a row is the same
+    # transaction when both agree on the account, date, amount, direction,
+    # currency, status and merchant text, and the held id is absent from this
+    # fetch. Two identical purchases held at once are a multiset: the oldest
+    # row takes the first entry and is claimed by it, so the next entry takes
+    # the other one instead of a twin being inserted.
     entry_ref = raw.get("entry_reference")
     entry_ref = entry_ref.strip() if isinstance(entry_ref, str) else ""
     if entry_ref and entry_ref != "0":
@@ -3087,9 +3204,13 @@ async def _find_synced_duplicate(
         )
         if txn_data.status == "pending":
             statement = statement.where(Transaction.status == "pending")
+        # Oldest first: when two identical purchases are held, the first entry
+        # of a fetch takes the older row and leaves the other one for the next.
+        statement = statement.order_by(Transaction.created_at, Transaction.id)
         result = await session.execute(statement)
         rekey_matches = []
         late_ref_matches = []
+        rewritten_ref_matches = []
         for candidate in result.scalars():
             if candidate.external_id in incoming_external_ids:
                 continue
@@ -3133,10 +3254,28 @@ async def _find_synced_duplicate(
                 )
             ):
                 late_ref_matches.append(candidate)
+            elif (
+                isinstance(candidate_ref, str)
+                and candidate_ref
+                and candidate.source == "sync"
+                and candidate.currency == txn_data.currency
+                and candidate.status == txn_data.status
+                and (
+                    candidate.date == txn_data.date
+                    or stored_date == txn_data.date
+                )
+                and token_overlap(
+                    candidate.original_description or candidate.description,
+                    txn_data.description,
+                ) >= 0.9
+            ):
+                rewritten_ref_matches.append(candidate)
         if len(rekey_matches) == 1:
             return rekey_matches[0]
         if not rekey_matches and len(late_ref_matches) == 1:
             return late_ref_matches[0]
+        if not rekey_matches and not late_ref_matches and rewritten_ref_matches:
+            return rewritten_ref_matches[0]
 
     # Path 5: local import history from before the account was connected.
     # Posting lag and statement exports can shift the date or shorten the
